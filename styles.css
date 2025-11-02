@@ -1,9 +1,15 @@
 :root {
   --sidebar-width: 320px;
-  --layers-width: 220px;
-  --page-bg: #f5f7fa;
-  --accent: #ff7f50;
-  --border: #d0d6e0;
+  --layers-width: 240px;
+  --page-bg: #eeefe0;
+  --accent: #819a91;
+  --accent-dark: #5e7e74;
+  --border: #a7c1a8;
+  --panel-highlight: rgba(129, 154, 145, 0.35);
+  --panel-fill: rgba(209, 216, 190, 0.45);
+  --sidebar-bg: linear-gradient(180deg, #d1d8be 0%, #eeefe0 100%);
+  --layers-bg: linear-gradient(180deg, #eeefe0 0%, #d1d8be 100%);
+  --text-primary: #2f3d39;
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
@@ -13,8 +19,8 @@
 
 body {
   margin: 0;
-  background: #eef1f6;
-  color: #1f2937;
+  background: var(--page-bg);
+  color: var(--text-primary);
 }
 
 .app-shell {
@@ -24,13 +30,17 @@ body {
 }
 
 .sidebar, .layers-panel {
-  background: white;
   padding: 1.5rem;
   overflow-y: auto;
   border-right: 1px solid var(--border);
 }
 
+.sidebar {
+  background: var(--sidebar-bg);
+}
+
 .layers-panel {
+  background: var(--layers-bg);
   border-left: 1px solid var(--border);
   border-right: none;
 }
@@ -66,7 +76,7 @@ textarea {
   padding: 0.4rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fdfdfd;
+  background: rgba(255, 255, 255, 0.9);
   font: inherit;
 }
 
@@ -79,9 +89,9 @@ button {
   font: inherit;
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
-  border: 1px solid transparent;
-  background: #2f80ed;
-  color: white;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #f6f8f4;
   cursor: pointer;
   margin-bottom: 0.5rem;
   width: 100%;
@@ -89,10 +99,12 @@ button {
 
 button.primary {
   background: var(--accent);
+  border-color: var(--accent);
 }
 
 button.danger {
-  background: #ef4444;
+  background: #d86a6a;
+  border-color: #d86a6a;
 }
 
 button:disabled {
@@ -101,7 +113,7 @@ button:disabled {
 }
 
 .control-block {
-  background: #f9fafb;
+  background: rgba(238, 239, 224, 0.7);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.75rem;
@@ -115,7 +127,7 @@ button:disabled {
 
 .workspace {
   position: relative;
-  background: #dfe5ef;
+  background: #c7d6c8;
   overflow: hidden;
 }
 
@@ -153,8 +165,8 @@ button:disabled {
   content: "";
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(to right, rgba(79, 70, 229, 0.18) 0, rgba(79, 70, 229, 0.18) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(79, 70, 229, 0.18) 0, rgba(79, 70, 229, 0.18) 1px, transparent 1px);
+  background-image: linear-gradient(to right, rgba(129, 154, 145, 0.18) 0, rgba(129, 154, 145, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(129, 154, 145, 0.18) 0, rgba(129, 154, 145, 0.18) 1px, transparent 1px);
   background-size: var(--grid-gap-x) 100%, 100% var(--grid-gap-y);
   pointer-events: none;
   mix-blend-mode: multiply;
@@ -162,7 +174,7 @@ button:disabled {
 
 .comic-area {
   position: absolute;
-  background: rgba(59, 130, 246, 0.3);
+  background: rgba(129, 154, 145, 0.2);
   pointer-events: none;
   box-sizing: content-box;
 }
@@ -170,8 +182,8 @@ button:disabled {
 .comic-area-label {
   position: absolute;
   padding: 0.3rem 0.6rem;
-  background: rgba(15, 23, 42, 0.7);
-  color: #fff;
+  background: rgba(47, 61, 57, 0.7);
+  color: #f9faf5;
   border-radius: 999px;
   font-size: 0.85rem;
   pointer-events: none;
@@ -188,23 +200,21 @@ button:disabled {
 
 .panel {
   position: absolute;
-  border: var(--frame-thickness) solid #000;
-  border-radius: 0;
   overflow: hidden;
-  background: rgba(59, 130, 246, 0.3);
-  transition: border-color 0.2s;
+  background: var(--panel-fill);
+  transition: box-shadow 0.2s;
   user-select: none;
 }
 
 .panel.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(255, 127, 80, 0.4);
+  box-shadow: 0 0 0 3px var(--panel-highlight);
 }
 
 .panel .image-wrapper {
   width: 100%;
   height: 100%;
   position: relative;
+  z-index: 1;
 }
 
 .panel img {
@@ -214,6 +224,7 @@ button:disabled {
   transform-origin: center;
   max-width: none;
   max-height: none;
+  pointer-events: auto;
 }
 
 .panel .placeholder {
@@ -221,9 +232,23 @@ button:disabled {
   inset: 0;
   display: grid;
   place-items: center;
-  color: rgba(55, 65, 81, 0.6);
+  color: rgba(47, 61, 57, 0.6);
   font-size: 0.85rem;
   pointer-events: none;
+}
+
+.panel-outline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.panel-outline polygon {
+  fill: none;
+  stroke: #000;
+  stroke-width: var(--frame-thickness);
+  vector-effect: non-scaling-stroke;
 }
 
 .handle {
@@ -265,7 +290,7 @@ button:disabled {
 }
 
 .cut-overlay polygon {
-  fill: rgba(59, 130, 246, 0.3);
+  fill: rgba(129, 154, 145, 0.3);
 }
 
 .cut-overlay line {
@@ -295,23 +320,26 @@ button:disabled {
   min-width: 120px;
   min-height: 80px;
   padding: 16px;
-  color: #111827;
-  background: white;
-  border: 3px solid #1f2937;
-  border-radius: 50% / 60%;
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.2);
-  resize: both;
-  overflow: hidden;
+  color: #2f3d39;
+  background: transparent;
+  box-shadow: 0 8px 16px rgba(47, 61, 57, 0.25);
+  overflow: visible;
 }
 
-.bubble.rectangle {
-  border-radius: 18px;
+.bubble-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
 }
 
-.bubble.cloud {
-  border-radius: 60px;
-  border-style: dashed;
-  background: radial-gradient(circle at 20% 20%, #fff, #f0f4ff);
+.bubble-shape {
+  fill: #fdfdf8;
+  stroke: #1f2b27;
+  stroke-width: 4px;
+  vector-effect: non-scaling-stroke;
 }
 
 .bubble-content {
@@ -326,8 +354,52 @@ button:disabled {
 }
 
 .bubble.selected {
-  outline: 3px solid var(--accent);
-  outline-offset: 4px;
+  outline: 3px solid rgba(129, 154, 145, 0.5);
+  outline-offset: 6px;
+}
+
+.bubble-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fdfdf8;
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  transform: translate(-50%, -50%);
+  z-index: 1100;
+  cursor: pointer;
+}
+
+.bubble-handle.edge-horizontal {
+  cursor: ns-resize;
+}
+
+.bubble-handle.edge-vertical {
+  cursor: ew-resize;
+}
+
+.bubble-handle.corner-nw,
+.bubble-handle.corner-se {
+  cursor: nwse-resize;
+}
+
+.bubble-handle.corner-ne,
+.bubble-handle.corner-sw {
+  cursor: nesw-resize;
+}
+
+.bubble-handle.tail {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border-color: #fdfdf8;
+  cursor: grab;
+}
+
+.bubble-handle.tail:active {
+  cursor: grabbing;
 }
 
 .layers-panel ul {
@@ -346,14 +418,14 @@ button:disabled {
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: white;
+  background: rgba(255, 255, 255, 0.75);
   cursor: pointer;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .layers-panel li.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(255, 127, 80, 0.3);
+  box-shadow: 0 0 0 2px rgba(129, 154, 145, 0.35);
 }
 
 .layer-actions {
@@ -365,14 +437,26 @@ button:disabled {
   width: auto;
   padding: 0.3rem 0.4rem;
   font-size: 0.75rem;
-  background: #e5e7eb;
-  color: #111827;
+  background: rgba(238, 239, 224, 0.9);
+  color: var(--text-primary);
 }
 
 .layer-actions button:hover {
-  background: #d1d5db;
+  background: rgba(209, 216, 190, 0.9);
 }
 
 .hidden {
   display: none !important;
+}
+
+.export-section {
+  margin-top: 2rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.export-section h3 {
+  margin-top: 0;
+  font-size: 1rem;
+  margin-bottom: 0.8rem;
 }
