@@ -18,13 +18,34 @@
         <label>高度 (px)
           <input type="number" id="page-height" min="200" value="1200">
         </label>
-        <label>左右间隙 (px)
+        <label>参考网格左右间距 (px)
           <input type="number" id="gap-x" min="0" value="24">
         </label>
-        <label>上下间隙 (px)
+        <label>参考网格上下间距 (px)
           <input type="number" id="gap-y" min="0" value="24">
         </label>
-        <button id="toggle-draw" class="primary">开始绘制格子</button>
+      </section>
+      <section>
+        <h2>漫画区域</h2>
+        <label>上下间隙 (px)
+          <input type="number" id="area-margin-y" min="0" value="80">
+        </label>
+        <label>左右间隙 (px)
+          <input type="number" id="area-margin-x" min="0" value="80">
+        </label>
+        <label>格框粗细 (px)
+          <input type="number" id="frame-thickness" min="1" value="6">
+        </label>
+      </section>
+      <section>
+        <h2>格子切分</h2>
+        <label>纵切间隙 (px)
+          <input type="number" id="slice-gap-x" min="0" value="24">
+        </label>
+        <label>横切间隙 (px)
+          <input type="number" id="slice-gap-y" min="0" value="24">
+        </label>
+        <button id="toggle-draw" class="primary">开始切分格子</button>
       </section>
       <section>
         <h2>选中格子</h2>
@@ -88,7 +109,9 @@
     </aside>
     <main class="workspace">
       <div id="page-container">
-        <div id="page" class="page" data-mode="view"></div>
+        <div id="page" class="page" data-mode="view">
+          <div id="comic-area" class="comic-area"></div>
+        </div>
       </div>
     </main>
     <aside class="layers-panel">
