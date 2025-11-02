@@ -38,6 +38,7 @@
         </label>
       </section>
       <section>
+
         <h2>格子切分</h2>
         <label>纵切间隙 (px)
           <input type="number" id="slice-gap-x" min="0" value="16">
@@ -118,16 +119,17 @@
         <h3>导出漫画</h3>
         <label>格式
           <select id="export-format">
-            <option value="jpg" selected>JPG</option>
-            <option value="png">PNG</option>
-          </select>
-        </label>
-        <label>质量
-          <select id="export-quality">
-            <option value="1" selected>高</option>
-            <option value="0.75">中</option>
-            <option value="0.5">低</option>
-          </select>
+<select id="export-format">
+  <option value="jpg" selected>JPG</option>
+  <option value="png">PNG</option>
+</select>
+
+<select id="export-quality">
+  <option value="1" selected>高</option>
+  <option value="0.75">中</option>
+  <option value="0.5">低</option>
+</select>
+
         </label>
         <button id="export-image" class="primary">导出图片</button>
       </section>

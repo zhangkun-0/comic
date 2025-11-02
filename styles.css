@@ -10,9 +10,11 @@
   --sidebar-bg: linear-gradient(180deg, #d1d8be 0%, #eeefe0 100%);
   --layers-bg: linear-gradient(180deg, #eeefe0 0%, #d1d8be 100%);
   --text-primary: #2f3d39;
+:root {
   --gap-color: #ffffff;
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
+
 
 * {
   box-sizing: border-box;
@@ -183,6 +185,8 @@ button:disabled {
 
 
 .page-size-indicator {
+  position: absolute;
+#tooltip {
   position: absolute;
   top: 16px;
   left: 50%;

@@ -451,19 +451,22 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
   const imgEl = panelEl.querySelector('img');
   imageWrapper.addEventListener('wheel', (event) => {
     event.preventDefault();
-    event.stopPropagation();
+imageWrapper.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  selectPanel(id);
+  if (!panel.image.src) return;
+  handlePanelImageWheel(panel, event);
+}, { passive: false });
+
+imageWrapper.addEventListener('contextmenu', (event) => event.preventDefault());
+imageWrapper.addEventListener('mousedown', (event) => {
+  if (event.button === 2 && panel.image.src) {
+    event.preventDefault();
     selectPanel(id);
-    if (!panel.image.src) return;
-    handlePanelImageWheel(panel, event);
-  }, { passive: false });
-  imageWrapper.addEventListener('contextmenu', (event) => event.preventDefault());
-  imageWrapper.addEventListener('mousedown', (event) => {
-    if (event.button === 2 && panel.image.src) {
-      event.preventDefault();
-      selectPanel(id);
-      startImageDrag(panel, event);
-    }
-  });
+    startImageDrag(panel, event);
+  }
+});
 
   imgEl.draggable = false;
 
@@ -552,7 +555,7 @@ function applyImageTransform(panel) {
   const { baseScale, scale, offsetX, offsetY, rotation, flipX, hue, saturation, contrast } = panel.image;
   const actualScaleX = (flipX ? -1 : 1) * baseScale * scale;
   const actualScaleY = baseScale * scale;
-  imgEl.style.transform = `translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${actualScaleX}, ${actualScaleY})`;
+  imgEl.style.transform = `translate(-50%, -50%) translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${actualScaleX}, ${actualScaleY})`;
   imgEl.style.filter = `hue-rotate(${hue}deg) saturate(${saturation}%) contrast(${contrast}%)`;
   imgEl.style.userSelect = 'none';
 }
@@ -1508,9 +1511,20 @@ function addBubble() {
     fontSize: 24,
     padding: 16,
     text: '请输入对白',
-    strokeWidth: 5,
-    tail: { x: 120 + width / 2, y: 120 + height + 40 }
-  };
+const bubble = {
+  id,
+  type: 'ellipse',
+  x: 120,
+  y: 120,
+  width,
+  height,
+  fontSize: 24,
+  padding: 16,
+  text: '请输入对白',
+  strokeWidth: 5,
+  tail: { x: 120 + width / 2, y: 120 + height + 40 }
+};
+
 
   const bubbleEl = document.createElement('div');
   bubbleEl.className = 'bubble';
@@ -1539,20 +1553,24 @@ function addBubble() {
   });
   bubbleEl.appendChild(content);
 
-  bubbleEl.addEventListener('click', (event) => {
-    event.stopPropagation();
+bubbleEl.addEventListener('click', (event) => event.stopPropagation());
+bubbleEl.addEventListener('mousedown', (event) => {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  selectBubble(id);
+});
+bubbleEl.addEventListener('mousedown', (event) => {
+  if (event.button === 2) {
+    event.preventDefault();
     selectBubble(id);
-  });
-  bubbleEl.addEventListener('mousedown', (event) => {
-    if (event.button === 2) {
-      event.preventDefault();
-      selectBubble(id);
-      startMovingBubble(bubble, event);
-    }
-  });
+    startMovingBubble(bubble, event);
+  }
+});
+
   bubbleEl.addEventListener('contextmenu', (event) => {
     event.preventDefault();
   });
+
   bubbleEl.addEventListener('dblclick', (event) => {
     if (event.button !== 0) return;
     if (event.target.closest('.bubble-handle')) return;
@@ -1711,6 +1729,9 @@ function ensureBubbleTail(bubble) {
 
 function updateBubbleElement(bubble) {
   if (!bubble.element || !bubble.contentEl || !bubble.svgEl || !bubble.shapeEl) return;
+function updateBubbleElement(bubble) {
+  if (!bubble.element || !bubble.contentEl || !bubble.svgEl || !bubble.shapeEl) return;
+
   bubble.strokeWidth = clampNumber(bubble.strokeWidth || 5, 1, 20);
   bubble.element.style.left = `${bubble.x}px`;
   bubble.element.style.top = `${bubble.y}px`;
@@ -1727,10 +1748,12 @@ function updateBubbleElement(bubble) {
   bubble.svgEl.setAttribute('preserveAspectRatio', 'none');
   bubble.svgEl.setAttribute('overflow', 'visible');
   bubble.shapeEl.setAttribute('d', buildBubblePath(bubble, width, height));
+
   bubble.svgEl.style.left = '0px';
   bubble.svgEl.style.top = '0px';
   bubble.svgEl.style.width = `${width}px`;
   bubble.svgEl.style.height = `${height}px`;
+
   try {
     const bbox = bubble.shapeEl.getBBox();
     if (bbox) {
@@ -1834,6 +1857,7 @@ function buildPointerPath(bubble, width, height) {
     }
     return value;
   };
+
   const pointAt = (angle) => ({
     x: cx + rx * Math.cos(angle),
     y: cy + ry * Math.sin(angle)
@@ -2041,13 +2065,16 @@ if (exportImageBtn) {
     nodesToHide.forEach((node) => {
       node.style.visibility = 'hidden';
     });
+
     try {
       const format = exportFormatSelect.value === 'jpg' ? 'jpg' : 'png';
       const quality = clampNumber(parseFloat(exportQualitySelect.value) || 1, 0.1, 1);
       const canvas = await window.html2canvas(pageEl, {
+      html2canvas(pageEl, {
         backgroundColor: state.gapColor === 'black' ? '#000000' : '#ffffff',
         scale: 2
       });
+
       const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = format === 'jpg'
         ? canvas.toDataURL(mime, quality)
