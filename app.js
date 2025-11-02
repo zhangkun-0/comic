@@ -18,14 +18,17 @@ const state = {
   selectedPanelId: null,
   selectedBubbleId: null,
   mode: 'view',
-  comicAreaRect: null
+  comicAreaRect: null,
+  gapColor: 'white'
 };
 
 const stageContainer = document.getElementById('stage-container');
 const stageEl = document.getElementById('page-container');
+const workspaceEl = document.querySelector('.workspace');
 const pageEl = document.getElementById('page');
 const comicAreaEl = document.getElementById('comic-area');
-const comicAreaLabelEl = document.getElementById('comic-area-label');
+const gapColorSelect = document.getElementById('gap-color');
+const pageSizeIndicatorEl = document.getElementById('page-size-indicator');
 const toggleDrawBtn = document.getElementById('toggle-draw');
 const pageWidthInput = document.getElementById('page-width');
 const pageHeightInput = document.getElementById('page-height');
@@ -52,6 +55,7 @@ const deleteBubbleBtn = document.getElementById('delete-bubble');
 const bubbleTypeSelect = document.getElementById('bubble-type');
 const bubbleFontSizeInput = document.getElementById('bubble-font-size');
 const bubblePaddingInput = document.getElementById('bubble-padding');
+const bubbleStrokeInput = document.getElementById('bubble-stroke');
 const bubbleTextInput = document.getElementById('bubble-text');
 
 const exportFormatSelect = document.getElementById('export-format');
@@ -92,11 +96,51 @@ function applyPageSettings() {
   pageEl.style.height = `${height}px`;
   pageEl.style.setProperty('--frame-thickness', `${state.comicArea.frameThickness}px`);
   updateComicArea();
+  updatePageSizeIndicator();
+  applyGapColor();
   if (userAdjustedViewport) {
     applyViewportTransform();
   } else {
     centerViewport();
   }
+}
+
+function updatePageSizeIndicator() {
+  if (!pageSizeIndicatorEl) return;
+  const { width, height } = state.page;
+  if (width > 0 && height > 0) {
+    pageSizeIndicatorEl.textContent = `${Math.round(width)} × ${Math.round(height)} px`;
+    pageSizeIndicatorEl.style.display = 'block';
+    positionPageSizeIndicator();
+  } else {
+    pageSizeIndicatorEl.style.display = 'none';
+  }
+}
+
+function applyGapColor() {
+  const color = state.gapColor === 'black' ? '#000000' : '#ffffff';
+  document.documentElement.style.setProperty('--gap-color', color);
+  pageEl.style.backgroundColor = color;
+  if (stageContainer) {
+    stageContainer.style.backgroundColor = color;
+  }
+  if (workspaceEl) {
+    workspaceEl.style.backgroundColor = color;
+  }
+}
+
+function positionPageSizeIndicator() {
+  if (!pageSizeIndicatorEl || !stageContainer) return;
+  if (pageSizeIndicatorEl.style.display === 'none') return;
+  const scale = viewport.scale;
+  const halfWidth = (state.page.width * scale) / 2;
+  const left = viewport.translateX + halfWidth;
+  const offset = 40;
+  const top = viewport.translateY - offset;
+  const minTop = 12;
+  const clampedTop = Math.max(minTop, top);
+  pageSizeIndicatorEl.style.left = `${left}px`;
+  pageSizeIndicatorEl.style.top = `${clampedTop}px`;
 }
 
 function updateComicArea() {
@@ -131,15 +175,6 @@ function updateComicArea() {
     width: contentWidth,
     height: contentHeight
   };
-
-  if (contentWidth > 0 && contentHeight > 0) {
-    comicAreaLabelEl.textContent = `${Math.round(contentWidth)} × ${Math.round(contentHeight)} px`;
-    comicAreaLabelEl.style.left = `${area.marginX + contentWidth / 2}px`;
-    comicAreaLabelEl.style.top = `${Math.max(0, area.marginY)}px`;
-    comicAreaLabelEl.style.display = 'block';
-  } else {
-    comicAreaLabelEl.style.display = 'none';
-  }
 
   if (cutState && cutState.overlay) {
     cutState.overlay.svg.setAttribute('width', width.toString());
@@ -215,6 +250,14 @@ sliceGapYInput.addEventListener('input', () => {
   state.slicing.gapY = clampNumber(parseInt(sliceGapYInput.value, 10) || 0, 0, 400);
 });
 
+if (gapColorSelect) {
+  gapColorSelect.value = state.gapColor;
+  gapColorSelect.addEventListener('change', () => {
+    state.gapColor = gapColorSelect.value === 'black' ? 'black' : 'white';
+    applyGapColor();
+  });
+}
+
 function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -222,6 +265,7 @@ function clampNumber(value, min, max) {
 function applyViewportTransform() {
   if (!stageEl) return;
   stageEl.style.transform = `translate(${viewport.translateX}px, ${viewport.translateY}px) scale(${viewport.scale})`;
+  positionPageSizeIndicator();
 }
 
 function centerViewport(force = false) {
@@ -257,6 +301,9 @@ function clientToPagePoint(clientX, clientY) {
 
 function onStageWheel(event) {
   if (!stageContainer) return;
+  if (event.target instanceof HTMLElement && event.target.closest('.image-wrapper')) {
+    return;
+  }
   event.preventDefault();
   const containerPoint = clientToContainerPoint(event.clientX, event.clientY);
   const worldX = (containerPoint.x - viewport.translateX) / viewport.scale;
@@ -373,7 +420,9 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
     </svg>
     <div class="image-wrapper">
       <div class="placeholder">双击或在左侧上传图片</div>
-      <img class="panel-image" alt="">
+      <div class="image-positioner">
+        <img class="panel-image" alt="">
+      </div>
     </div>
   `;
   panelEl.addEventListener('click', (event) => event.stopPropagation());
@@ -402,18 +451,22 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
   const imgEl = panelEl.querySelector('img');
   imageWrapper.addEventListener('wheel', (event) => {
     event.preventDefault();
+imageWrapper.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  selectPanel(id);
+  if (!panel.image.src) return;
+  handlePanelImageWheel(panel, event);
+}, { passive: false });
+
+imageWrapper.addEventListener('contextmenu', (event) => event.preventDefault());
+imageWrapper.addEventListener('mousedown', (event) => {
+  if (event.button === 2 && panel.image.src) {
+    event.preventDefault();
     selectPanel(id);
-    if (!panel.image.src) return;
-    handlePanelImageWheel(panel, event);
-  }, { passive: false });
-  imageWrapper.addEventListener('contextmenu', (event) => event.preventDefault());
-  imageWrapper.addEventListener('mousedown', (event) => {
-    if (event.button === 2 && panel.image.src) {
-      event.preventDefault();
-      selectPanel(id);
-      startImageDrag(panel, event);
-    }
-  });
+    startImageDrag(panel, event);
+  }
+});
 
   imgEl.draggable = false;
 
@@ -1185,6 +1238,7 @@ function selectBubble(id) {
   removeHandles();
   removeBubbleHandles();
   enablePanelControls(false);
+  stopEditingAllBubbles();
   const bubble = state.bubbles.find((b) => b.id === id);
   if (bubble) {
     syncBubbleControls(bubble);
@@ -1206,6 +1260,7 @@ function clearSelection() {
   removeBubbleHandles();
   enablePanelControls(false);
   enableBubbleControls(false);
+  stopEditingAllBubbles();
   refreshLayers();
 }
 
@@ -1216,7 +1271,9 @@ function enablePanelControls(enabled) {
 }
 
 function enableBubbleControls(enabled) {
-  [deleteBubbleBtn, bubbleTypeSelect, bubbleFontSizeInput, bubblePaddingInput, bubbleTextInput].forEach((el) => {
+  [deleteBubbleBtn, bubbleTypeSelect, bubbleFontSizeInput, bubblePaddingInput, bubbleStrokeInput, bubbleTextInput].forEach((el
+  ) => {
+    if (!el) return;
     el.disabled = !enabled;
   });
 }
@@ -1454,8 +1511,20 @@ function addBubble() {
     fontSize: 24,
     padding: 16,
     text: '请输入对白',
-    tail: { x: 120 + width / 2, y: 120 + height + 40 }
-  };
+const bubble = {
+  id,
+  type: 'ellipse',
+  x: 120,
+  y: 120,
+  width,
+  height,
+  fontSize: 24,
+  padding: 16,
+  text: '请输入对白',
+  strokeWidth: 5,
+  tail: { x: 120 + width / 2, y: 120 + height + 40 }
+};
+
 
   const bubbleEl = document.createElement('div');
   bubbleEl.className = 'bubble';
@@ -1472,24 +1541,42 @@ function addBubble() {
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  content.contentEditable = 'true';
+  content.contentEditable = 'false';
   content.style.fontSize = `${bubble.fontSize}px`;
   content.textContent = bubble.text;
   content.addEventListener('input', () => {
     bubble.text = content.textContent || '';
     bubbleTextInput.value = bubble.text;
   });
+  content.addEventListener('blur', () => {
+    content.contentEditable = 'false';
+  });
   bubbleEl.appendChild(content);
 
-  bubbleEl.addEventListener('click', (event) => event.stopPropagation());
-  bubbleEl.addEventListener('mousedown', (event) => {
+bubbleEl.addEventListener('click', (event) => event.stopPropagation());
+bubbleEl.addEventListener('mousedown', (event) => {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  selectBubble(id);
+});
+bubbleEl.addEventListener('mousedown', (event) => {
+  if (event.button === 2) {
+    event.preventDefault();
+    selectBubble(id);
+    startMovingBubble(bubble, event);
+  }
+});
+
+  bubbleEl.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+  });
+
+  bubbleEl.addEventListener('dblclick', (event) => {
     if (event.button !== 0) return;
+    if (event.target.closest('.bubble-handle')) return;
     event.stopPropagation();
     selectBubble(id);
-    if (event.target.closest('.bubble-content')) {
-      return;
-    }
-    startMovingBubble(bubble, event);
+    startBubbleEditing(bubble);
   });
 
   bubble.element = bubbleEl;
@@ -1536,6 +1623,15 @@ bubblePaddingInput.addEventListener('input', () => {
   updateBubbleElement(bubble);
 });
 
+if (bubbleStrokeInput) {
+  bubbleStrokeInput.addEventListener('input', () => {
+    const bubble = getSelectedBubble();
+    if (!bubble) return;
+    bubble.strokeWidth = clampNumber(parseInt(bubbleStrokeInput.value, 10) || 1, 1, 20);
+    updateBubbleElement(bubble);
+  });
+}
+
 bubbleTextInput.addEventListener('input', () => {
   const bubble = getSelectedBubble();
   if (!bubble) return;
@@ -1552,6 +1648,32 @@ function syncBubbleControls(bubble) {
   bubbleFontSizeInput.value = bubble.fontSize.toString();
   bubblePaddingInput.value = bubble.padding.toString();
   bubbleTextInput.value = bubble.text;
+  if (bubbleStrokeInput) {
+    bubbleStrokeInput.value = (bubble.strokeWidth || 5).toString();
+  }
+}
+
+function stopEditingAllBubbles() {
+  state.bubbles.forEach((bubble) => {
+    if (bubble.contentEl) {
+      bubble.contentEl.contentEditable = 'false';
+      bubble.contentEl.blur();
+    }
+  });
+}
+
+function startBubbleEditing(bubble) {
+  if (!bubble || !bubble.contentEl) return;
+  stopEditingAllBubbles();
+  bubble.contentEl.contentEditable = 'true';
+  bubble.contentEl.focus();
+  const selection = window.getSelection();
+  if (selection && bubble.contentEl.firstChild) {
+    const range = document.createRange();
+    range.selectNodeContents(bubble.contentEl);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
 }
 
 function startMovingBubble(bubble, event) {
@@ -1607,6 +1729,10 @@ function ensureBubbleTail(bubble) {
 
 function updateBubbleElement(bubble) {
   if (!bubble.element || !bubble.contentEl || !bubble.svgEl || !bubble.shapeEl) return;
+function updateBubbleElement(bubble) {
+  if (!bubble.element || !bubble.contentEl || !bubble.svgEl || !bubble.shapeEl) return;
+
+  bubble.strokeWidth = clampNumber(bubble.strokeWidth || 5, 1, 20);
   bubble.element.style.left = `${bubble.x}px`;
   bubble.element.style.top = `${bubble.y}px`;
   bubble.element.style.width = `${bubble.width}px`;
@@ -1614,6 +1740,7 @@ function updateBubbleElement(bubble) {
   bubble.element.style.padding = `${bubble.padding}px`;
   bubble.element.dataset.type = bubble.type;
   bubble.contentEl.style.fontSize = `${bubble.fontSize}px`;
+  bubble.shapeEl.style.strokeWidth = `${bubble.strokeWidth}px`;
 
   const width = Math.max(bubble.width, 40);
   const height = Math.max(bubble.height, 40);
@@ -1621,6 +1748,29 @@ function updateBubbleElement(bubble) {
   bubble.svgEl.setAttribute('preserveAspectRatio', 'none');
   bubble.svgEl.setAttribute('overflow', 'visible');
   bubble.shapeEl.setAttribute('d', buildBubblePath(bubble, width, height));
+
+  bubble.svgEl.style.left = '0px';
+  bubble.svgEl.style.top = '0px';
+  bubble.svgEl.style.width = `${width}px`;
+  bubble.svgEl.style.height = `${height}px`;
+
+  try {
+    const bbox = bubble.shapeEl.getBBox();
+    if (bbox) {
+      const extraLeft = Math.max(0, -bbox.x);
+      const extraTop = Math.max(0, -bbox.y);
+      const extraRight = Math.max(0, bbox.x + bbox.width - width);
+      const extraBottom = Math.max(0, bbox.y + bbox.height - height);
+      if (extraLeft || extraTop || extraRight || extraBottom) {
+        bubble.svgEl.style.left = `${-extraLeft}px`;
+        bubble.svgEl.style.top = `${-extraTop}px`;
+        bubble.svgEl.style.width = `${width + extraLeft + extraRight}px`;
+        bubble.svgEl.style.height = `${height + extraTop + extraBottom}px`;
+      }
+    }
+  } catch (error) {
+    // ignore getBBox issues in hidden states
+  }
 
   if (state.selectedBubbleId === bubble.id) {
     updateBubbleHandles(bubble);
@@ -1695,7 +1845,7 @@ function buildPointerPath(bubble, width, height) {
     };
   }
   const startAngle = -Math.PI / 2;
-  const spread = Math.PI / 6;
+  const spread = (5 * Math.PI) / 180;
   let theta = Math.atan2(localTailY - cy, localTailX - cx);
   if (!Number.isFinite(theta)) {
     theta = Math.PI / 2;
@@ -1707,6 +1857,7 @@ function buildPointerPath(bubble, width, height) {
     }
     return value;
   };
+
   const pointAt = (angle) => ({
     x: cx + rx * Math.cos(angle),
     y: cy + ry * Math.sin(angle)
@@ -1909,18 +2060,21 @@ if (exportImageBtn) {
       return;
     }
     exportImageBtn.disabled = true;
-    const nodesToHide = Array.from(document.querySelectorAll('.handle, .bubble-handle, #tooltip'));
+    const nodesToHide = Array.from(document.querySelectorAll('.handle, .bubble-handle, #tooltip, #page-size-indicator'));
     const previousVisibility = nodesToHide.map((node) => node.style.visibility);
     nodesToHide.forEach((node) => {
       node.style.visibility = 'hidden';
     });
+
     try {
       const format = exportFormatSelect.value === 'jpg' ? 'jpg' : 'png';
       const quality = clampNumber(parseFloat(exportQualitySelect.value) || 1, 0.1, 1);
       const canvas = await window.html2canvas(pageEl, {
-        backgroundColor: '#ffffff',
+      html2canvas(pageEl, {
+        backgroundColor: state.gapColor === 'black' ? '#000000' : '#ffffff',
         scale: 2
       });
+
       const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = format === 'jpg'
         ? canvas.toDataURL(mime, quality)

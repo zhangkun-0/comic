@@ -10,8 +10,11 @@
   --sidebar-bg: linear-gradient(180deg, #d1d8be 0%, #eeefe0 100%);
   --layers-bg: linear-gradient(180deg, #eeefe0 0%, #d1d8be 100%);
   --text-primary: #2f3d39;
+:root {
+  --gap-color: #ffffff;
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
+
 
 * {
   box-sizing: border-box;
@@ -127,7 +130,7 @@ button:disabled {
 
 .workspace {
   position: relative;
-  background: #c7d6c8;
+  background: var(--gap-color);
   overflow: hidden;
 }
 
@@ -136,6 +139,7 @@ button:disabled {
   width: 100%;
   height: 100%;
   cursor: grab;
+  background: var(--gap-color);
 }
 
 .stage-container.grabbing {
@@ -151,7 +155,7 @@ button:disabled {
 
 .page {
   position: relative;
-  background: var(--page-bg);
+  background: var(--gap-color);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
   border-radius: 12px;
   overflow: visible;
@@ -179,17 +183,22 @@ button:disabled {
   box-sizing: content-box;
 }
 
-.comic-area-label {
+
+.page-size-indicator {
   position: absolute;
-  padding: 0.3rem 0.6rem;
-  background: rgba(47, 61, 57, 0.7);
-  color: #f9faf5;
+#tooltip {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: rgba(47, 61, 57, 0.85);
+  color: #fdfdf8;
   border-radius: 999px;
-  font-size: 0.85rem;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.9rem;
   pointer-events: none;
+  z-index: 1200;
   white-space: nowrap;
-  transform: translate(-50%, -120%);
-  display: none;
 }
 
 
@@ -215,12 +224,19 @@ button:disabled {
   height: 100%;
   position: relative;
   z-index: 1;
+  overflow: hidden;
+}
+
+.panel .image-positioner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .panel img {
-  position: absolute;
-  top: 50%;
-  left: 50%;
+  position: relative;
   transform-origin: center;
   max-width: none;
   max-height: none;
@@ -338,7 +354,7 @@ button:disabled {
 .bubble-shape {
   fill: #fdfdf8;
   stroke: #1f2b27;
-  stroke-width: 4px;
+  stroke-width: 5px;
   vector-effect: non-scaling-stroke;
 }
 
@@ -351,6 +367,8 @@ button:disabled {
   align-items: center;
   justify-content: center;
   word-break: break-word;
+  position: relative;
+  z-index: 1;
 }
 
 .bubble.selected {

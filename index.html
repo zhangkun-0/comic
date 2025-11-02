@@ -27,11 +27,18 @@
         <label>左右间隙 (px)
           <input type="number" id="area-margin-x" min="0" value="60">
         </label>
+        <label>格框间隙颜色
+          <select id="gap-color">
+            <option value="white" selected>白色</option>
+            <option value="black">黑色</option>
+          </select>
+        </label>
         <label>格框粗细 (px)
           <input type="number" id="frame-thickness" min="1" value="4">
         </label>
       </section>
       <section>
+
         <h2>格子切分</h2>
         <label>纵切间隙 (px)
           <input type="number" id="slice-gap-x" min="0" value="16">
@@ -86,6 +93,9 @@
           <label>内边距 (px)
             <input type="number" id="bubble-padding" min="0" max="80" value="16">
           </label>
+          <label>对话框粗细 (px)
+            <input type="number" id="bubble-stroke" min="1" max="20" value="5">
+          </label>
           <label>内容
             <textarea id="bubble-text" rows="4"></textarea>
           </label>
@@ -94,10 +104,10 @@
     </aside>
     <main class="workspace">
       <div id="stage-container" class="stage-container">
+        <div id="page-size-indicator" class="page-size-indicator"></div>
         <div id="page-container">
           <div id="page" class="page" data-mode="view">
             <div id="comic-area" class="comic-area"></div>
-            <div id="comic-area-label" class="comic-area-label"></div>
           </div>
         </div>
       </div>
@@ -109,16 +119,17 @@
         <h3>导出漫画</h3>
         <label>格式
           <select id="export-format">
-            <option value="png">PNG</option>
-            <option value="jpg">JPG</option>
-          </select>
-        </label>
-        <label>质量
-          <select id="export-quality">
-            <option value="1">高</option>
-            <option value="0.75">中</option>
-            <option value="0.5">低</option>
-          </select>
+<select id="export-format">
+  <option value="jpg" selected>JPG</option>
+  <option value="png">PNG</option>
+</select>
+
+<select id="export-quality">
+  <option value="1" selected>高</option>
+  <option value="0.75">中</option>
+  <option value="0.5">低</option>
+</select>
+
         </label>
         <button id="export-image" class="primary">导出图片</button>
       </section>
