@@ -1,15 +1,15 @@
 const state = {
   page: {
-    width: 900,
-    height: 1200
+    width: 1000,
+    height: 1600
   },
   comicArea: {
-    marginX: 80,
-    marginY: 80,
-    frameThickness: 6
+    marginX: 60,
+    marginY: 60,
+    frameThickness: 4
   },
   slicing: {
-    gapX: 24,
+    gapX: 16,
     gapY: 24
   },
   panels: [],
@@ -40,9 +40,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const deletePanelBtn = document.getElementById('delete-panel');
 const panelImageInput = document.getElementById('panel-image');
-const imageScaleInput = document.getElementById('image-scale');
-const imageOffsetXInput = document.getElementById('image-offset-x');
-const imageOffsetYInput = document.getElementById('image-offset-y');
 const imageRotationInput = document.getElementById('image-rotation');
 const imageFlipBtn = document.getElementById('image-flip');
 
@@ -57,10 +54,16 @@ const bubbleFontSizeInput = document.getElementById('bubble-font-size');
 const bubblePaddingInput = document.getElementById('bubble-padding');
 const bubbleTextInput = document.getElementById('bubble-text');
 
+const exportFormatSelect = document.getElementById('export-format');
+const exportQualitySelect = document.getElementById('export-quality');
+const exportImageBtn = document.getElementById('export-image');
+
 let cutState = null;
 let handleState = null;
 let movingPanelState = null;
 let movingBubbleState = null;
+let imageDragState = null;
+let bubbleHandleState = null;
 
 const viewport = {
   scale: 1,
@@ -180,12 +183,12 @@ if (stageContainer) {
 }
 
 pageWidthInput.addEventListener('input', () => {
-  state.page.width = clampNumber(parseInt(pageWidthInput.value, 10) || 900, 200, 2000);
+  state.page.width = clampNumber(parseInt(pageWidthInput.value, 10) || 1000, 200, 2000);
   applyPageSettings();
 });
 
 pageHeightInput.addEventListener('input', () => {
-  state.page.height = clampNumber(parseInt(pageHeightInput.value, 10) || 1200, 200, 3000);
+  state.page.height = clampNumber(parseInt(pageHeightInput.value, 10) || 1600, 200, 3000);
   applyPageSettings();
 });
 
@@ -365,6 +368,9 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
   panelEl.className = 'panel';
   panelEl.dataset.id = id;
   panelEl.innerHTML = `
+    <svg class="panel-outline" preserveAspectRatio="none">
+      <polygon points="" />
+    </svg>
     <div class="image-wrapper">
       <div class="placeholder">双击或在左侧上传图片</div>
       <img class="panel-image" alt="">
@@ -373,8 +379,11 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
   panelEl.addEventListener('click', (event) => event.stopPropagation());
   panelEl.addEventListener('mousedown', (event) => {
     event.stopPropagation();
+    if (event.button !== 0 && event.button !== 2) {
+      return;
+    }
     selectPanel(id);
-    if (event.target.classList.contains('handle')) {
+    if (event.target.classList.contains('handle') || event.button !== 0) {
       return;
     }
     startMovingPanel(panel, event);
@@ -383,6 +392,30 @@ function createPanel(points, layerIndex = state.layers.length, options = {}) {
     selectPanel(id);
     panelImageInput.click();
   });
+
+  const outlineSvg = panelEl.querySelector('.panel-outline');
+  outlineSvg.setAttribute('overflow', 'visible');
+  const outlinePolygon = outlineSvg.querySelector('polygon');
+  panel.outline = { svg: outlineSvg, polygon: outlinePolygon };
+
+  const imageWrapper = panelEl.querySelector('.image-wrapper');
+  const imgEl = panelEl.querySelector('img');
+  imageWrapper.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    selectPanel(id);
+    if (!panel.image.src) return;
+    handlePanelImageWheel(panel, event);
+  }, { passive: false });
+  imageWrapper.addEventListener('contextmenu', (event) => event.preventDefault());
+  imageWrapper.addEventListener('mousedown', (event) => {
+    if (event.button === 2 && panel.image.src) {
+      event.preventDefault();
+      selectPanel(id);
+      startImageDrag(panel, event);
+    }
+  });
+
+  imgEl.draggable = false;
 
   panel.element = panelEl;
   pageEl.appendChild(panelEl);
@@ -412,6 +445,17 @@ function updatePanelElement(panel) {
   el.style.width = `${Math.max(width, 1)}px`;
   el.style.height = `${Math.max(height, 1)}px`;
   el.style.clipPath = clipPath;
+  if (panel.outline) {
+    const localPoints = panel.points.map((point) => ({
+      x: point.x - minX,
+      y: point.y - minY
+    }));
+    const { svg, polygon } = panel.outline;
+    const safeWidth = Math.max(width, 1);
+    const safeHeight = Math.max(height, 1);
+    svg.setAttribute('viewBox', `0 0 ${safeWidth} ${safeHeight}`);
+    polygon.setAttribute('points', localPoints.map((point) => `${point.x},${point.y}`).join(' '));
+  }
   recomputeBaseScale(panel);
   updatePanelImage(panel);
   if (state.selectedPanelId === panel.id) {
@@ -458,10 +502,50 @@ function applyImageTransform(panel) {
   const { baseScale, scale, offsetX, offsetY, rotation, flipX, hue, saturation, contrast } = panel.image;
   const actualScaleX = (flipX ? -1 : 1) * baseScale * scale;
   const actualScaleY = baseScale * scale;
-  imgEl.style.transform = `translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${actualScaleX}, ${actualScaleY})`;
+  imgEl.style.transform = `translate(-50%, -50%) translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${actualScaleX}, ${actualScaleY})`;
   imgEl.style.filter = `hue-rotate(${hue}deg) saturate(${saturation}%) contrast(${contrast}%)`;
-  imgEl.style.pointerEvents = 'none';
   imgEl.style.userSelect = 'none';
+}
+
+function handlePanelImageWheel(panel, event) {
+  const delta = -event.deltaY;
+  const scaleFactor = Math.exp(delta * 0.0015);
+  const newScale = clampNumber(panel.image.scale * scaleFactor, 0.2, 5);
+  if (!Number.isFinite(newScale)) return;
+  panel.image.scale = newScale;
+  applyImageTransform(panel);
+}
+
+function startImageDrag(panel, event) {
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
+  imageDragState = {
+    panelId: panel.id,
+    startX: startPoint.x,
+    startY: startPoint.y,
+    originOffsetX: panel.image.offsetX,
+    originOffsetY: panel.image.offsetY
+  };
+  document.addEventListener('mousemove', onImageDragMove);
+  document.addEventListener('mouseup', stopImageDrag);
+}
+
+function onImageDragMove(event) {
+  if (!imageDragState) return;
+  const panel = state.panels.find((p) => p.id === imageDragState.panelId);
+  if (!panel) return;
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const dx = point.x - imageDragState.startX;
+  const dy = point.y - imageDragState.startY;
+  panel.image.offsetX = imageDragState.originOffsetX + dx;
+  panel.image.offsetY = imageDragState.originOffsetY + dy;
+  applyImageTransform(panel);
+}
+
+function stopImageDrag() {
+  if (!imageDragState) return;
+  imageDragState = null;
+  document.removeEventListener('mousemove', onImageDragMove);
+  document.removeEventListener('mouseup', stopImageDrag);
 }
 
 function recomputeBaseScale(panel) {
@@ -1000,31 +1084,35 @@ function onHandleMove(event) {
 
   if (handleState.type === 'edge') {
     if (handleState.edge === 'top') {
+      const newY = clampNumber(handleState.originalPoints[0].y + dy, areaRect.top, areaRect.bottom);
       [0, 1].forEach((idx) => {
         newPoints[idx] = clampPointToArea({
-          x: handleState.originalPoints[idx].x + dx,
-          y: handleState.originalPoints[idx].y + dy
+          x: handleState.originalPoints[idx].x,
+          y: newY
         });
       });
     } else if (handleState.edge === 'right') {
+      const newX = clampNumber(handleState.originalPoints[1].x + dx, areaRect.left, areaRect.right);
       [1, 2].forEach((idx) => {
         newPoints[idx] = clampPointToArea({
-          x: handleState.originalPoints[idx].x + dx,
-          y: handleState.originalPoints[idx].y + dy
+          x: newX,
+          y: handleState.originalPoints[idx].y
         });
       });
     } else if (handleState.edge === 'bottom') {
+      const newY = clampNumber(handleState.originalPoints[2].y + dy, areaRect.top, areaRect.bottom);
       [2, 3].forEach((idx) => {
         newPoints[idx] = clampPointToArea({
-          x: handleState.originalPoints[idx].x + dx,
-          y: handleState.originalPoints[idx].y + dy
+          x: handleState.originalPoints[idx].x,
+          y: newY
         });
       });
     } else if (handleState.edge === 'left') {
+      const newX = clampNumber(handleState.originalPoints[3].x + dx, areaRect.left, areaRect.right);
       [3, 0].forEach((idx) => {
         newPoints[idx] = clampPointToArea({
-          x: handleState.originalPoints[idx].x + dx,
-          y: handleState.originalPoints[idx].y + dy
+          x: newX,
+          y: handleState.originalPoints[idx].y
         });
       });
     }
@@ -1072,6 +1160,7 @@ function selectPanel(id) {
   Array.from(document.querySelectorAll('.bubble')).forEach((bubbleEl) => {
     bubbleEl.classList.remove('selected');
   });
+  removeBubbleHandles();
   const panel = state.panels.find((p) => p.id === id);
   if (panel) {
     updateHandles(panel);
@@ -1094,11 +1183,13 @@ function selectBubble(id) {
     bubbleEl.classList.toggle('selected', bubbleEl.dataset.id === id);
   });
   removeHandles();
+  removeBubbleHandles();
   enablePanelControls(false);
   const bubble = state.bubbles.find((b) => b.id === id);
   if (bubble) {
     syncBubbleControls(bubble);
     enableBubbleControls(true);
+    updateBubbleHandles(bubble);
   }
   refreshLayers();
 }
@@ -1112,13 +1203,14 @@ function clearSelection() {
   Array.from(document.querySelectorAll('.panel')).forEach((panelEl) => panelEl.classList.remove('selected'));
   Array.from(document.querySelectorAll('.bubble')).forEach((bubbleEl) => bubbleEl.classList.remove('selected'));
   removeHandles();
+  removeBubbleHandles();
   enablePanelControls(false);
   enableBubbleControls(false);
   refreshLayers();
 }
 
 function enablePanelControls(enabled) {
-  [deletePanelBtn, panelImageInput, imageScaleInput, imageOffsetXInput, imageOffsetYInput, imageRotationInput, imageFlipBtn, filterHueInput, filterSaturationInput, filterContrastInput].forEach((el) => {
+  [deletePanelBtn, panelImageInput, imageRotationInput, imageFlipBtn, filterHueInput, filterSaturationInput, filterContrastInput].forEach((el) => {
     el.disabled = !enabled;
   });
 }
@@ -1129,17 +1221,41 @@ function enableBubbleControls(enabled) {
   });
 }
 
-deletePanelBtn.addEventListener('click', () => {
-  if (!state.selectedPanelId) return;
-  const index = state.panels.findIndex((p) => p.id === state.selectedPanelId);
+function deletePanelById(id) {
+  if (!id) return;
+  const index = state.panels.findIndex((p) => p.id === id);
   if (index >= 0) {
     state.panels[index].element.remove();
     state.panels.splice(index, 1);
   }
-  state.layers = state.layers.filter((layer) => !(layer.type === 'panel' && layer.id === state.selectedPanelId));
-  state.selectedPanelId = null;
-  removeHandles();
+  state.layers = state.layers.filter((layer) => !(layer.type === 'panel' && layer.id === id));
+  if (state.selectedPanelId === id) {
+    state.selectedPanelId = null;
+    removeHandles();
+    enablePanelControls(false);
+  }
   refreshLayers();
+}
+
+function deleteBubbleById(id) {
+  if (!id) return;
+  const index = state.bubbles.findIndex((b) => b.id === id);
+  if (index >= 0) {
+    state.bubbles[index].element.remove();
+    state.bubbles.splice(index, 1);
+  }
+  state.layers = state.layers.filter((layer) => !(layer.type === 'bubble' && layer.id === id));
+  if (state.selectedBubbleId === id) {
+    state.selectedBubbleId = null;
+    removeBubbleHandles();
+    enableBubbleControls(false);
+  }
+  refreshLayers();
+}
+
+deletePanelBtn.addEventListener('click', () => {
+  if (!state.selectedPanelId) return;
+  deletePanelById(state.selectedPanelId);
 });
 
 panelImageInput.addEventListener('change', (event) => {
@@ -1154,27 +1270,6 @@ panelImageInput.addEventListener('change', (event) => {
   };
   reader.readAsDataURL(file);
   panelImageInput.value = '';
-});
-
-imageScaleInput.addEventListener('input', () => {
-  const panel = getSelectedPanel();
-  if (!panel) return;
-  panel.image.scale = parseFloat(imageScaleInput.value) || 1;
-  applyImageTransform(panel);
-});
-
-imageOffsetXInput.addEventListener('input', () => {
-  const panel = getSelectedPanel();
-  if (!panel) return;
-  panel.image.offsetX = parseFloat(imageOffsetXInput.value) || 0;
-  applyImageTransform(panel);
-});
-
-imageOffsetYInput.addEventListener('input', () => {
-  const panel = getSelectedPanel();
-  if (!panel) return;
-  panel.image.offsetY = parseFloat(imageOffsetYInput.value) || 0;
-  applyImageTransform(panel);
 });
 
 imageRotationInput.addEventListener('input', () => {
@@ -1213,9 +1308,6 @@ filterContrastInput.addEventListener('input', () => {
 });
 
 function syncImageControls(panel) {
-  imageScaleInput.value = panel.image.scale.toString();
-  imageOffsetXInput.value = panel.image.offsetX.toString();
-  imageOffsetYInput.value = panel.image.offsetY.toString();
   imageRotationInput.value = panel.image.rotation.toString();
   filterHueInput.value = panel.image.hue.toString();
   filterSaturationInput.value = panel.image.saturation.toString();
@@ -1297,6 +1389,7 @@ function refreshLayers() {
       <span class="layer-actions">
         <button type="button" data-action="up">上移</button>
         <button type="button" data-action="down">下移</button>
+        <button type="button" data-action="delete">删除</button>
       </span>
     `;
     li.addEventListener('click', (event) => {
@@ -1307,6 +1400,12 @@ function refreshLayers() {
           moveLayer(index, index - 1);
         } else if (target.dataset.action === 'down') {
           moveLayer(index, index + 1);
+        } else if (target.dataset.action === 'delete') {
+          if (layer.type === 'panel') {
+            deletePanelById(layer.id);
+          } else {
+            deleteBubbleById(layer.id);
+          }
         }
         return;
       }
@@ -1343,25 +1442,34 @@ function applyLayerZIndices() {
 
 function addBubble() {
   const id = createId();
+  const width = 220;
+  const height = 160;
   const bubble = {
     id,
     type: 'ellipse',
     x: 120,
     y: 120,
-    width: 220,
-    height: 160,
+    width,
+    height,
     fontSize: 24,
     padding: 16,
-    text: '请输入对白'
+    text: '请输入对白',
+    tail: { x: 120 + width / 2, y: 120 + height + 40 }
   };
+
   const bubbleEl = document.createElement('div');
-  bubbleEl.className = 'bubble ellipse';
+  bubbleEl.className = 'bubble';
   bubbleEl.dataset.id = id;
-  bubbleEl.style.left = `${bubble.x}px`;
-  bubbleEl.style.top = `${bubble.y}px`;
-  bubbleEl.style.width = `${bubble.width}px`;
-  bubbleEl.style.height = `${bubble.height}px`;
-  bubbleEl.style.padding = `${bubble.padding}px`;
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.classList.add('bubble-svg');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('overflow', 'visible');
+  const shape = document.createElementNS(SVG_NS, 'path');
+  shape.classList.add('bubble-shape');
+  svg.appendChild(shape);
+  bubbleEl.appendChild(svg);
+
   const content = document.createElement('div');
   content.className = 'bubble-content';
   content.contentEditable = 'true';
@@ -1372,8 +1480,10 @@ function addBubble() {
     bubbleTextInput.value = bubble.text;
   });
   bubbleEl.appendChild(content);
+
   bubbleEl.addEventListener('click', (event) => event.stopPropagation());
   bubbleEl.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
     event.stopPropagation();
     selectBubble(id);
     if (event.target.closest('.bubble-content')) {
@@ -1381,15 +1491,16 @@ function addBubble() {
     }
     startMovingBubble(bubble, event);
   });
-  bubbleEl.addEventListener('mouseup', () => {
-    bubble.width = bubbleEl.offsetWidth;
-    bubble.height = bubbleEl.offsetHeight;
-  });
-  pageEl.appendChild(bubbleEl);
+
   bubble.element = bubbleEl;
   bubble.contentEl = content;
+  bubble.svgEl = svg;
+  bubble.shapeEl = shape;
+
+  pageEl.appendChild(bubbleEl);
   state.bubbles.push(bubble);
   state.layers.push({ type: 'bubble', id });
+  updateBubbleElement(bubble);
   refreshLayers();
   selectBubble(id);
 }
@@ -1398,36 +1509,31 @@ addBubbleBtn.addEventListener('click', addBubble);
 
 deleteBubbleBtn.addEventListener('click', () => {
   if (!state.selectedBubbleId) return;
-  const index = state.bubbles.findIndex((b) => b.id === state.selectedBubbleId);
-  if (index >= 0) {
-    state.bubbles[index].element.remove();
-    state.bubbles.splice(index, 1);
-  }
-  state.layers = state.layers.filter((layer) => !(layer.type === 'bubble' && layer.id === state.selectedBubbleId));
-  state.selectedBubbleId = null;
-  refreshLayers();
+  deleteBubbleById(state.selectedBubbleId);
 });
 
 bubbleTypeSelect.addEventListener('change', () => {
   const bubble = getSelectedBubble();
   if (!bubble) return;
   bubble.type = bubbleTypeSelect.value;
-  bubble.element.classList.remove('ellipse', 'rectangle', 'cloud');
-  bubble.element.classList.add(bubble.type);
+  if (bubble.type === 'pointer') {
+    ensureBubbleTail(bubble);
+  }
+  updateBubbleElement(bubble);
 });
 
 bubbleFontSizeInput.addEventListener('input', () => {
   const bubble = getSelectedBubble();
   if (!bubble) return;
   bubble.fontSize = parseInt(bubbleFontSizeInput.value, 10) || 16;
-  bubble.contentEl.style.fontSize = `${bubble.fontSize}px`;
+  updateBubbleElement(bubble);
 });
 
 bubblePaddingInput.addEventListener('input', () => {
   const bubble = getSelectedBubble();
   if (!bubble) return;
   bubble.padding = parseInt(bubblePaddingInput.value, 10) || 0;
-  bubble.element.style.padding = `${bubble.padding}px`;
+  updateBubbleElement(bubble);
 });
 
 bubbleTextInput.addEventListener('input', () => {
@@ -1469,12 +1575,19 @@ function onBubbleMove(event) {
   const point = clientToPagePoint(event.clientX, event.clientY);
   const dx = point.x - movingBubbleState.startX;
   const dy = point.y - movingBubbleState.startY;
-  const x = clampNumber(movingBubbleState.originalX + dx, 0, state.page.width - bubble.element.offsetWidth);
-  const y = clampNumber(movingBubbleState.originalY + dy, 0, state.page.height - bubble.element.offsetHeight);
-  bubble.x = x;
-  bubble.y = y;
-  bubble.element.style.left = `${x}px`;
-  bubble.element.style.top = `${y}px`;
+  const newX = clampNumber(movingBubbleState.originalX + dx, 0, state.page.width - bubble.width);
+  const newY = clampNumber(movingBubbleState.originalY + dy, 0, state.page.height - bubble.height);
+  const offsetX = newX - bubble.x;
+  const offsetY = newY - bubble.y;
+  bubble.x = newX;
+  bubble.y = newY;
+  if (bubble.tail) {
+    bubble.tail = {
+      x: bubble.tail.x + offsetX,
+      y: bubble.tail.y + offsetY
+    };
+  }
+  updateBubbleElement(bubble);
 }
 
 function stopMovingBubble() {
@@ -1483,16 +1596,300 @@ function stopMovingBubble() {
   document.removeEventListener('mouseup', stopMovingBubble);
 }
 
+function ensureBubbleTail(bubble) {
+  if (!bubble.tail) {
+    bubble.tail = {
+      x: bubble.x + bubble.width / 2,
+      y: bubble.y + bubble.height + 40
+    };
+  }
+}
+
+function updateBubbleElement(bubble) {
+  if (!bubble.element || !bubble.contentEl || !bubble.svgEl || !bubble.shapeEl) return;
+  bubble.element.style.left = `${bubble.x}px`;
+  bubble.element.style.top = `${bubble.y}px`;
+  bubble.element.style.width = `${bubble.width}px`;
+  bubble.element.style.height = `${bubble.height}px`;
+  bubble.element.style.padding = `${bubble.padding}px`;
+  bubble.element.dataset.type = bubble.type;
+  bubble.contentEl.style.fontSize = `${bubble.fontSize}px`;
+
+  const width = Math.max(bubble.width, 40);
+  const height = Math.max(bubble.height, 40);
+  bubble.svgEl.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  bubble.svgEl.setAttribute('preserveAspectRatio', 'none');
+  bubble.svgEl.setAttribute('overflow', 'visible');
+  bubble.shapeEl.setAttribute('d', buildBubblePath(bubble, width, height));
+
+  if (state.selectedBubbleId === bubble.id) {
+    updateBubbleHandles(bubble);
+  }
+}
+
+function buildBubblePath(bubble, width, height) {
+  if (bubble.type === 'rectangle') {
+    return buildRectanglePath(width, height);
+  }
+  if (bubble.type === 'pointer') {
+    ensureBubbleTail(bubble);
+    return buildPointerPath(bubble, width, height);
+  }
+  return buildEllipsePath(width, height);
+}
+
+function buildEllipsePath(width, height) {
+  const cx = width / 2;
+  const cy = height / 2;
+  const rx = width / 2;
+  const ry = height / 2;
+  return [
+    `M ${cx - rx} ${cy}`,
+    `A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy}`,
+    `A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy}`,
+    'Z'
+  ].join(' ');
+}
+
+function buildRectanglePath(width, height) {
+  const r = Math.min(30, width / 4, height / 4);
+  const right = width;
+  const bottom = height;
+  return [
+    `M ${r} 0`,
+    `H ${right - r}`,
+    `Q ${right} 0 ${right} ${r}`,
+    `V ${bottom - r}`,
+    `Q ${right} ${bottom} ${right - r} ${bottom}`,
+    `H ${r}`,
+    `Q 0 ${bottom} 0 ${bottom - r}`,
+    `V ${r}`,
+    `Q 0 0 ${r} 0`,
+    'Z'
+  ].join(' ');
+}
+
+function buildPointerPath(bubble, width, height) {
+  const cx = width / 2;
+  const cy = height / 2;
+  const rx = width / 2;
+  const ry = height / 2;
+  const tail = bubble.tail ? {
+    x: bubble.tail.x - bubble.x,
+    y: bubble.tail.y - bubble.y
+  } : { x: cx, y: height + 40 };
+  let localTailX = tail.x;
+  let localTailY = tail.y;
+  const diffX = localTailX - cx;
+  const diffY = localTailY - cy;
+  const normX = diffX / (rx || 1);
+  const normY = diffY / (ry || 1);
+  const normLength = Math.hypot(normX, normY);
+  if (normLength < 1.05) {
+    const scale = 1.05 / Math.max(normLength, 0.0001);
+    localTailX = cx + diffX * scale;
+    localTailY = cy + diffY * scale;
+    bubble.tail = {
+      x: bubble.x + localTailX,
+      y: bubble.y + localTailY
+    };
+  }
+  const startAngle = -Math.PI / 2;
+  const spread = Math.PI / 6;
+  let theta = Math.atan2(localTailY - cy, localTailX - cx);
+  if (!Number.isFinite(theta)) {
+    theta = Math.PI / 2;
+  }
+  const normalizeForward = (angle, base) => {
+    let value = angle;
+    while (value <= base) {
+      value += Math.PI * 2;
+    }
+    return value;
+  };
+  const pointAt = (angle) => ({
+    x: cx + rx * Math.cos(angle),
+    y: cy + ry * Math.sin(angle)
+  });
+  const angle1 = normalizeForward(theta - spread / 2, startAngle);
+  const angle2 = normalizeForward(theta + spread / 2, angle1);
+  const topPoint = pointAt(startAngle);
+  const base1 = pointAt(angle1);
+  const base2 = pointAt(angle2);
+  const delta1 = angle1 - startAngle;
+  const delta2 = (startAngle + Math.PI * 2) - angle2;
+  const largeArc1 = delta1 > Math.PI ? 1 : 0;
+  const largeArc2 = delta2 > Math.PI ? 1 : 0;
+  return [
+    `M ${topPoint.x} ${topPoint.y}`,
+    `A ${rx} ${ry} 0 ${largeArc1} 1 ${base1.x} ${base1.y}`,
+    `L ${localTailX} ${localTailY}`,
+    `L ${base2.x} ${base2.y}`,
+    `A ${rx} ${ry} 0 ${largeArc2} 1 ${topPoint.x} ${topPoint.y}`,
+    'Z'
+  ].join(' ');
+}
+
+function updateBubbleHandles(bubble) {
+  removeBubbleHandles();
+  const { x, y, width, height } = bubble;
+  const corners = [
+    { name: 'nw', x, y },
+    { name: 'ne', x: x + width, y },
+    { name: 'se', x: x + width, y: y + height },
+    { name: 'sw', x, y: y + height }
+  ];
+  corners.forEach((corner) => {
+    const handle = document.createElement('div');
+    handle.className = `bubble-handle corner-${corner.name}`;
+    handle.dataset.type = 'corner';
+    handle.dataset.position = corner.name;
+    handle.style.left = `${corner.x}px`;
+    handle.style.top = `${corner.y}px`;
+    handle.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      startBubbleHandleDrag(bubble, { type: 'corner', position: corner.name }, event);
+    });
+    pageEl.appendChild(handle);
+  });
+
+  const edges = [
+    { name: 'top', x: x + width / 2, y, className: 'edge-horizontal' },
+    { name: 'right', x: x + width, y: y + height / 2, className: 'edge-vertical' },
+    { name: 'bottom', x: x + width / 2, y: y + height, className: 'edge-horizontal' },
+    { name: 'left', x, y: y + height / 2, className: 'edge-vertical' }
+  ];
+  edges.forEach((edge) => {
+    const handle = document.createElement('div');
+    handle.className = `bubble-handle ${edge.className}`;
+    handle.dataset.type = 'edge';
+    handle.dataset.position = edge.name;
+    handle.style.left = `${edge.x}px`;
+    handle.style.top = `${edge.y}px`;
+    handle.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      startBubbleHandleDrag(bubble, { type: 'edge', position: edge.name }, event);
+    });
+    pageEl.appendChild(handle);
+  });
+
+  if (bubble.type === 'pointer') {
+    ensureBubbleTail(bubble);
+    const tailHandle = document.createElement('div');
+    tailHandle.className = 'bubble-handle tail';
+    tailHandle.dataset.type = 'tail';
+    tailHandle.style.left = `${bubble.tail.x}px`;
+    tailHandle.style.top = `${bubble.tail.y}px`;
+    tailHandle.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      startBubbleHandleDrag(bubble, { type: 'tail', position: 'tail' }, event);
+    });
+    pageEl.appendChild(tailHandle);
+  }
+}
+
+function removeBubbleHandles() {
+  document.querySelectorAll('.bubble-handle').forEach((handle) => handle.remove());
+}
+
+function startBubbleHandleDrag(bubble, info, event) {
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
+  bubbleHandleState = {
+    id: bubble.id,
+    type: info.type,
+    position: info.position,
+    startX: startPoint.x,
+    startY: startPoint.y,
+    original: {
+      x: bubble.x,
+      y: bubble.y,
+      width: bubble.width,
+      height: bubble.height,
+      tail: bubble.tail ? { ...bubble.tail } : null
+    }
+  };
+  document.addEventListener('mousemove', onBubbleHandleMove);
+  document.addEventListener('mouseup', stopBubbleHandleDrag);
+  event.preventDefault();
+}
+
+function onBubbleHandleMove(event) {
+  if (!bubbleHandleState) return;
+  const bubble = state.bubbles.find((b) => b.id === bubbleHandleState.id);
+  if (!bubble) return;
+  const { type, position, original } = bubbleHandleState;
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const dx = point.x - bubbleHandleState.startX;
+  const dy = point.y - bubbleHandleState.startY;
+  const minWidth = 120;
+  const minHeight = 80;
+  let changed = false;
+
+  if (type === 'corner') {
+    if (position === 'nw') {
+      let newX = clampNumber(original.x + dx, 0, original.x + original.width - minWidth);
+      let newY = clampNumber(original.y + dy, 0, original.y + original.height - minHeight);
+      bubble.x = newX;
+      bubble.y = newY;
+      bubble.width = clampNumber(original.width + (original.x - newX), minWidth, state.page.width - bubble.x);
+      bubble.height = clampNumber(original.height + (original.y - newY), minHeight, state.page.height - bubble.y);
+      changed = true;
+    } else if (position === 'ne') {
+      bubble.y = clampNumber(original.y + dy, 0, original.y + original.height - minHeight);
+      bubble.height = clampNumber(original.height + (original.y - bubble.y), minHeight, state.page.height - bubble.y);
+      bubble.width = clampNumber(original.width + dx, minWidth, state.page.width - original.x);
+      changed = true;
+    } else if (position === 'se') {
+      bubble.width = clampNumber(original.width + dx, minWidth, state.page.width - original.x);
+      bubble.height = clampNumber(original.height + dy, minHeight, state.page.height - original.y);
+      changed = true;
+    } else if (position === 'sw') {
+      bubble.x = clampNumber(original.x + dx, 0, original.x + original.width - minWidth);
+      bubble.width = clampNumber(original.width + (original.x - bubble.x), minWidth, state.page.width - bubble.x);
+      bubble.height = clampNumber(original.height + dy, minHeight, state.page.height - original.y);
+      changed = true;
+    }
+  } else if (type === 'edge') {
+    if (position === 'top') {
+      bubble.y = clampNumber(original.y + dy, 0, original.y + original.height - minHeight);
+      bubble.height = clampNumber(original.height + (original.y - bubble.y), minHeight, state.page.height - bubble.y);
+      changed = true;
+    } else if (position === 'right') {
+      bubble.width = clampNumber(original.width + dx, minWidth, state.page.width - original.x);
+      changed = true;
+    } else if (position === 'bottom') {
+      bubble.height = clampNumber(original.height + dy, minHeight, state.page.height - original.y);
+      changed = true;
+    } else if (position === 'left') {
+      bubble.x = clampNumber(original.x + dx, 0, original.x + original.width - minWidth);
+      bubble.width = clampNumber(original.width + (original.x - bubble.x), minWidth, state.page.width - bubble.x);
+      changed = true;
+    }
+  } else if (type === 'tail' && bubble.type === 'pointer') {
+    ensureBubbleTail(bubble);
+    const maxX = state.page.width;
+    const maxY = state.page.height;
+    bubble.tail = {
+      x: clampNumber((original.tail?.x || bubble.tail.x) + dx, 0, maxX),
+      y: clampNumber((original.tail?.y || bubble.tail.y) + dy, 0, maxY)
+    };
+    changed = true;
+  }
+
+  if (changed) {
+    updateBubbleElement(bubble);
+  }
+}
+
+function stopBubbleHandleDrag() {
+  bubbleHandleState = null;
+  document.removeEventListener('mousemove', onBubbleHandleMove);
+  document.removeEventListener('mouseup', stopBubbleHandleDrag);
+}
+
 function refreshBubbles() {
   state.bubbles.forEach((bubble) => {
-    bubble.element.style.left = `${bubble.x}px`;
-    bubble.element.style.top = `${bubble.y}px`;
-    bubble.element.style.width = `${bubble.width}px`;
-    bubble.element.style.height = `${bubble.height}px`;
-    bubble.element.style.padding = `${bubble.padding}px`;
-    bubble.contentEl.style.fontSize = `${bubble.fontSize}px`;
-    bubble.element.classList.remove('ellipse', 'rectangle', 'cloud');
-    bubble.element.classList.add(bubble.type);
+    updateBubbleElement(bubble);
   });
 }
 
@@ -1504,6 +1901,44 @@ function init() {
 }
 
 init();
+
+if (exportImageBtn) {
+  exportImageBtn.addEventListener('click', async () => {
+    if (typeof window.html2canvas !== 'function') {
+      console.warn('html2canvas not available');
+      return;
+    }
+    exportImageBtn.disabled = true;
+    const nodesToHide = Array.from(document.querySelectorAll('.handle, .bubble-handle, #tooltip'));
+    const previousVisibility = nodesToHide.map((node) => node.style.visibility);
+    nodesToHide.forEach((node) => {
+      node.style.visibility = 'hidden';
+    });
+    try {
+      const format = exportFormatSelect.value === 'jpg' ? 'jpg' : 'png';
+      const quality = clampNumber(parseFloat(exportQualitySelect.value) || 1, 0.1, 1);
+      const canvas = await window.html2canvas(pageEl, {
+        backgroundColor: '#ffffff',
+        scale: 2
+      });
+      const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
+      const dataUrl = format === 'jpg'
+        ? canvas.toDataURL(mime, quality)
+        : canvas.toDataURL(mime);
+      const link = document.createElement('a');
+      link.download = `comic-${Date.now()}.${format}`;
+      link.href = dataUrl;
+      link.click();
+    } catch (error) {
+      console.error('Failed to export image', error);
+    } finally {
+      nodesToHide.forEach((node, index) => {
+        node.style.visibility = previousVisibility[index];
+      });
+      exportImageBtn.disabled = false;
+    }
+  });
+}
 
 window.addEventListener('resize', () => {
   if (!userAdjustedViewport) {
