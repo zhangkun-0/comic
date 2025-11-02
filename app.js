@@ -1,9 +1,7 @@
 const state = {
   page: {
     width: 900,
-    height: 1200,
-    gapX: 24,
-    gapY: 24
+    height: 1200
   },
   comicArea: {
     marginX: 80,
@@ -23,13 +21,14 @@ const state = {
   comicAreaRect: null
 };
 
+const stageContainer = document.getElementById('stage-container');
+const stageEl = document.getElementById('page-container');
 const pageEl = document.getElementById('page');
 const comicAreaEl = document.getElementById('comic-area');
+const comicAreaLabelEl = document.getElementById('comic-area-label');
 const toggleDrawBtn = document.getElementById('toggle-draw');
 const pageWidthInput = document.getElementById('page-width');
 const pageHeightInput = document.getElementById('page-height');
-const gapXInput = document.getElementById('gap-x');
-const gapYInput = document.getElementById('gap-y');
 const areaMarginXInput = document.getElementById('area-margin-x');
 const areaMarginYInput = document.getElementById('area-margin-y');
 const frameThicknessInput = document.getElementById('frame-thickness');
@@ -63,6 +62,20 @@ let handleState = null;
 let movingPanelState = null;
 let movingBubbleState = null;
 
+const viewport = {
+  scale: 1,
+  minScale: 0.3,
+  maxScale: 3,
+  translateX: 0,
+  translateY: 0
+};
+
+let isPanning = false;
+let panStart = null;
+let panMoved = false;
+let panJustEnded = false;
+let userAdjustedViewport = false;
+
 function createId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -71,13 +84,16 @@ function createId() {
 }
 
 function applyPageSettings() {
-  const { width, height, gapX, gapY } = state.page;
+  const { width, height } = state.page;
   pageEl.style.width = `${width}px`;
   pageEl.style.height = `${height}px`;
-  pageEl.style.setProperty('--gap-x', `${Math.max(gapX, 16)}px`);
-  pageEl.style.setProperty('--gap-y', `${Math.max(gapY, 16)}px`);
   pageEl.style.setProperty('--frame-thickness', `${state.comicArea.frameThickness}px`);
   updateComicArea();
+  if (userAdjustedViewport) {
+    applyViewportTransform();
+  } else {
+    centerViewport();
+  }
 }
 
 function updateComicArea() {
@@ -87,32 +103,40 @@ function updateComicArea() {
   area.frameThickness = clampNumber(area.frameThickness, 1, maxFrame);
   frameThicknessInput.value = area.frameThickness.toString();
 
-  const maxMarginX = Math.max(0, Math.floor(width / 2 - area.frameThickness));
-  const maxMarginY = Math.max(0, Math.floor(height / 2 - area.frameThickness));
+  const maxMarginX = Math.max(0, Math.floor(width / 2));
+  const maxMarginY = Math.max(0, Math.floor(height / 2));
   area.marginX = clampNumber(area.marginX, 0, maxMarginX);
   area.marginY = clampNumber(area.marginY, 0, maxMarginY);
   areaMarginXInput.value = area.marginX.toString();
   areaMarginYInput.value = area.marginY.toString();
 
-  const contentWidth = Math.max(0, width - 2 * area.marginX - 2 * area.frameThickness);
-  const contentHeight = Math.max(0, height - 2 * area.marginY - 2 * area.frameThickness);
+  const contentWidth = Math.max(0, width - 2 * area.marginX);
+  const contentHeight = Math.max(0, height - 2 * area.marginY);
 
   comicAreaEl.style.left = `${area.marginX}px`;
   comicAreaEl.style.top = `${area.marginY}px`;
   comicAreaEl.style.width = `${contentWidth}px`;
   comicAreaEl.style.height = `${contentHeight}px`;
-  comicAreaEl.style.borderWidth = `${area.frameThickness}px`;
 
   pageEl.style.setProperty('--frame-thickness', `${area.frameThickness}px`);
 
   state.comicAreaRect = {
-    left: area.marginX + area.frameThickness,
-    top: area.marginY + area.frameThickness,
-    right: area.marginX + area.frameThickness + contentWidth,
-    bottom: area.marginY + area.frameThickness + contentHeight,
+    left: area.marginX,
+    top: area.marginY,
+    right: area.marginX + contentWidth,
+    bottom: area.marginY + contentHeight,
     width: contentWidth,
     height: contentHeight
   };
+
+  if (contentWidth > 0 && contentHeight > 0) {
+    comicAreaLabelEl.textContent = `${Math.round(contentWidth)} × ${Math.round(contentHeight)} px`;
+    comicAreaLabelEl.style.left = `${area.marginX + contentWidth / 2}px`;
+    comicAreaLabelEl.style.top = `${Math.max(0, area.marginY)}px`;
+    comicAreaLabelEl.style.display = 'block';
+  } else {
+    comicAreaLabelEl.style.display = 'none';
+  }
 
   if (cutState && cutState.overlay) {
     cutState.overlay.svg.setAttribute('width', width.toString());
@@ -145,6 +169,16 @@ function toggleDrawMode() {
 
 toggleDrawBtn.addEventListener('click', toggleDrawMode);
 
+if (stageContainer) {
+  stageContainer.addEventListener('wheel', onStageWheel, { passive: false });
+  stageContainer.addEventListener('mousedown', (event) => {
+    if (event.target === stageContainer) {
+      startPan(event);
+    }
+  });
+  stageContainer.addEventListener('click', handleStageClick);
+}
+
 pageWidthInput.addEventListener('input', () => {
   state.page.width = clampNumber(parseInt(pageWidthInput.value, 10) || 900, 200, 2000);
   applyPageSettings();
@@ -152,16 +186,6 @@ pageWidthInput.addEventListener('input', () => {
 
 pageHeightInput.addEventListener('input', () => {
   state.page.height = clampNumber(parseInt(pageHeightInput.value, 10) || 1200, 200, 3000);
-  applyPageSettings();
-});
-
-gapXInput.addEventListener('input', () => {
-  state.page.gapX = clampNumber(parseInt(gapXInput.value, 10) || 0, 0, 400);
-  applyPageSettings();
-});
-
-gapYInput.addEventListener('input', () => {
-  state.page.gapY = clampNumber(parseInt(gapYInput.value, 10) || 0, 0, 400);
   applyPageSettings();
 });
 
@@ -190,6 +214,128 @@ sliceGapYInput.addEventListener('input', () => {
 
 function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function applyViewportTransform() {
+  if (!stageEl) return;
+  stageEl.style.transform = `translate(${viewport.translateX}px, ${viewport.translateY}px) scale(${viewport.scale})`;
+}
+
+function centerViewport(force = false) {
+  if (!stageContainer || !stageEl) return;
+  const rect = stageContainer.getBoundingClientRect();
+  if ((userAdjustedViewport && !force) || rect.width === 0 || rect.height === 0) {
+    applyViewportTransform();
+    return;
+  }
+  viewport.translateX = (rect.width - state.page.width * viewport.scale) / 2;
+  viewport.translateY = (rect.height - state.page.height * viewport.scale) / 2;
+  applyViewportTransform();
+}
+
+function clientToContainerPoint(clientX, clientY) {
+  if (!stageContainer) {
+    return { x: clientX, y: clientY };
+  }
+  const rect = stageContainer.getBoundingClientRect();
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top
+  };
+}
+
+function clientToPagePoint(clientX, clientY) {
+  const containerPoint = clientToContainerPoint(clientX, clientY);
+  return {
+    x: (containerPoint.x - viewport.translateX) / viewport.scale,
+    y: (containerPoint.y - viewport.translateY) / viewport.scale
+  };
+}
+
+function onStageWheel(event) {
+  if (!stageContainer) return;
+  event.preventDefault();
+  const containerPoint = clientToContainerPoint(event.clientX, event.clientY);
+  const worldX = (containerPoint.x - viewport.translateX) / viewport.scale;
+  const worldY = (containerPoint.y - viewport.translateY) / viewport.scale;
+  const delta = -event.deltaY;
+  const scaleFactor = Math.exp(delta * 0.0015);
+  const newScale = clampNumber(viewport.scale * scaleFactor, viewport.minScale, viewport.maxScale);
+  const clampedScale = Number.isFinite(newScale) ? newScale : viewport.scale;
+  viewport.scale = clampedScale;
+  viewport.translateX = containerPoint.x - worldX * viewport.scale;
+  viewport.translateY = containerPoint.y - worldY * viewport.scale;
+  userAdjustedViewport = true;
+  applyViewportTransform();
+}
+
+function shouldStartPan(event) {
+  if (event.button !== 0) return false;
+  if (state.mode === 'cut') return false;
+  const target = event.target;
+  if (target instanceof HTMLElement && target.closest('.panel, .bubble, .handle')) {
+    return false;
+  }
+  return true;
+}
+
+function startPan(event) {
+  if (!shouldStartPan(event)) return;
+  isPanning = true;
+  panMoved = false;
+  panJustEnded = false;
+  panStart = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    translateX: viewport.translateX,
+    translateY: viewport.translateY
+  };
+  stageContainer.classList.add('grabbing');
+  document.addEventListener('mousemove', onPanMove);
+  document.addEventListener('mouseup', stopPan);
+  event.preventDefault();
+}
+
+function onPanMove(event) {
+  if (!isPanning || !panStart) return;
+  const dx = event.clientX - panStart.clientX;
+  const dy = event.clientY - panStart.clientY;
+  if (!panMoved && (Math.abs(dx) > 1 || Math.abs(dy) > 1)) {
+    panMoved = true;
+  }
+  viewport.translateX = panStart.translateX + dx;
+  viewport.translateY = panStart.translateY + dy;
+  userAdjustedViewport = true;
+  applyViewportTransform();
+}
+
+function stopPan() {
+  if (!isPanning) return;
+  document.removeEventListener('mousemove', onPanMove);
+  document.removeEventListener('mouseup', stopPan);
+  stageContainer.classList.remove('grabbing');
+  isPanning = false;
+  panJustEnded = panMoved;
+  panStart = null;
+  panMoved = false;
+}
+
+function handleStageClick(event) {
+  if (panJustEnded) {
+    panJustEnded = false;
+    return;
+  }
+  if (state.mode === 'cut') {
+    panJustEnded = false;
+    return;
+  }
+  const target = event.target;
+  if (target instanceof HTMLElement && target.closest('.panel, .bubble, .handle')) {
+    panJustEnded = false;
+    return;
+  }
+  clearSelection();
+  panJustEnded = false;
 }
 
 function createPanel(points, layerIndex = state.layers.length, options = {}) {
@@ -360,13 +506,21 @@ function computePanelMetrics(points) {
 }
 
 pageEl.addEventListener('mousedown', (event) => {
-  if (state.mode !== 'cut') {
-    if (!event.target.closest('.panel') && !event.target.closest('.bubble')) {
-      clearSelection();
-    }
+  if (state.mode === 'cut') {
+    startCut(event);
     return;
   }
-  startCut(event);
+  if (shouldStartPan(event)) {
+    startPan(event);
+    return;
+  }
+  if (
+    !event.target.closest('.panel') &&
+    !event.target.closest('.bubble') &&
+    !event.target.closest('.handle')
+  ) {
+    clearSelection();
+  }
 });
 
 function startCut(event) {
@@ -375,9 +529,9 @@ function startCut(event) {
     return;
   }
   cancelCutState();
-  const rect = pageEl.getBoundingClientRect();
-  const x = clampNumber(event.clientX - rect.left, areaRect.left, areaRect.right);
-  const y = clampNumber(event.clientY - rect.top, areaRect.top, areaRect.bottom);
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
+  const x = clampNumber(startPoint.x, areaRect.left, areaRect.right);
+  const y = clampNumber(startPoint.y, areaRect.top, areaRect.bottom);
 
   const basePanel = findPanelAtPoint(x, y);
   const basePoints = basePanel ? basePanel.points.map((p) => ({ ...p })) : getAreaPolygon();
@@ -418,9 +572,9 @@ function onCutMove(event) {
   if (!cutState) return;
   const areaRect = state.comicAreaRect;
   if (!areaRect) return;
-  const rect = pageEl.getBoundingClientRect();
-  const x = clampNumber(event.clientX - rect.left, areaRect.left, areaRect.right);
-  const y = clampNumber(event.clientY - rect.top, areaRect.top, areaRect.bottom);
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const x = clampNumber(point.x, areaRect.left, areaRect.right);
+  const y = clampNumber(point.y, areaRect.top, areaRect.bottom);
   cutState.currentX = x;
   cutState.currentY = y;
 
@@ -443,9 +597,9 @@ function finishCut(event) {
     cancelCutState();
     return;
   }
-  const rect = pageEl.getBoundingClientRect();
-  const x = clampNumber(event.clientX - rect.left, areaRect.left, areaRect.right);
-  const y = clampNumber(event.clientY - rect.top, areaRect.top, areaRect.bottom);
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const x = clampNumber(point.x, areaRect.left, areaRect.right);
+  const y = clampNumber(point.y, areaRect.top, areaRect.bottom);
   cutState.currentX = x;
   cutState.currentY = y;
   if (!cutState.orientation) {
@@ -808,17 +962,19 @@ function removeHandles() {
 }
 
 function startHandleDrag(panel, handleInfo, event) {
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
   handleState = {
     panelId: panel.id,
     type: handleInfo.type,
     index: handleInfo.index ?? null,
     edge: handleInfo.edge ?? null,
-    startX: event.clientX,
-    startY: event.clientY,
+    startX: startPoint.x,
+    startY: startPoint.y,
     originalPoints: panel.points.map((point) => ({ ...point }))
   };
   document.addEventListener('mousemove', onHandleMove);
   document.addEventListener('mouseup', stopHandleDrag);
+  event.preventDefault();
 }
 
 function onHandleMove(event) {
@@ -827,18 +983,19 @@ function onHandleMove(event) {
   if (!panel) return;
   const areaRect = state.comicAreaRect;
   if (!areaRect) return;
-  const rect = pageEl.getBoundingClientRect();
   if (handleState.type === 'corner' && handleState.index !== null) {
-    const x = clampNumber(event.clientX - rect.left, areaRect.left, areaRect.right);
-    const y = clampNumber(event.clientY - rect.top, areaRect.top, areaRect.bottom);
+    const point = clientToPagePoint(event.clientX, event.clientY);
+    const x = clampNumber(point.x, areaRect.left, areaRect.right);
+    const y = clampNumber(point.y, areaRect.top, areaRect.bottom);
     panel.points[handleState.index] = { x, y };
     updatePanelElement(panel);
     showTooltip(event.clientX, event.clientY, `${Math.round(x)}, ${Math.round(y)}`);
     return;
   }
 
-  const dx = event.clientX - handleState.startX;
-  const dy = event.clientY - handleState.startY;
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const dx = point.x - handleState.startX;
+  const dy = point.y - handleState.startY;
   const newPoints = handleState.originalPoints.map((point) => ({ ...point }));
 
   if (handleState.type === 'edge') {
@@ -1070,22 +1227,25 @@ function getSelectedPanel() {
 }
 
 function startMovingPanel(panel, event) {
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
   movingPanelState = {
     panelId: panel.id,
-    startX: event.clientX,
-    startY: event.clientY,
+    startX: startPoint.x,
+    startY: startPoint.y,
     originalPoints: panel.points.map((p) => ({ ...p }))
   };
   document.addEventListener('mousemove', movePanel);
   document.addEventListener('mouseup', stopMovingPanel);
+  event.preventDefault();
 }
 
 function movePanel(event) {
   if (!movingPanelState) return;
   const panel = state.panels.find((p) => p.id === movingPanelState.panelId);
   if (!panel) return;
-  const dx = event.clientX - movingPanelState.startX;
-  const dy = event.clientY - movingPanelState.startY;
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const dx = point.x - movingPanelState.startX;
+  const dy = point.y - movingPanelState.startY;
   const areaRect = state.comicAreaRect;
   if (areaRect) {
     let minX = Infinity;
@@ -1289,23 +1449,26 @@ function syncBubbleControls(bubble) {
 }
 
 function startMovingBubble(bubble, event) {
+  const startPoint = clientToPagePoint(event.clientX, event.clientY);
   movingBubbleState = {
     id: bubble.id,
-    startX: event.clientX,
-    startY: event.clientY,
+    startX: startPoint.x,
+    startY: startPoint.y,
     originalX: bubble.x,
     originalY: bubble.y
   };
   document.addEventListener('mousemove', onBubbleMove);
   document.addEventListener('mouseup', stopMovingBubble);
+  event.preventDefault();
 }
 
 function onBubbleMove(event) {
   if (!movingBubbleState) return;
   const bubble = state.bubbles.find((b) => b.id === movingBubbleState.id);
   if (!bubble) return;
-  const dx = event.clientX - movingBubbleState.startX;
-  const dy = event.clientY - movingBubbleState.startY;
+  const point = clientToPagePoint(event.clientX, event.clientY);
+  const dx = point.x - movingBubbleState.startX;
+  const dy = point.y - movingBubbleState.startY;
   const x = clampNumber(movingBubbleState.originalX + dx, 0, state.page.width - bubble.element.offsetWidth);
   const y = clampNumber(movingBubbleState.originalY + dy, 0, state.page.height - bubble.element.offsetHeight);
   bubble.x = x;
@@ -1319,12 +1482,6 @@ function stopMovingBubble() {
   document.removeEventListener('mousemove', onBubbleMove);
   document.removeEventListener('mouseup', stopMovingBubble);
 }
-
-pageEl.addEventListener('click', () => {
-  if (state.mode === 'view') {
-    clearSelection();
-  }
-});
 
 function refreshBubbles() {
   state.bubbles.forEach((bubble) => {
@@ -1343,11 +1500,17 @@ function init() {
   applyPageSettings();
   enablePanelControls(false);
   enableBubbleControls(false);
+  requestAnimationFrame(() => centerViewport());
 }
 
 init();
 
 window.addEventListener('resize', () => {
+  if (!userAdjustedViewport) {
+    centerViewport(true);
+  } else {
+    applyViewportTransform();
+  }
   if (state.selectedPanelId) {
     const panel = getSelectedPanel();
     if (panel) updateHandles(panel);
