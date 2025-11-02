@@ -13,28 +13,34 @@
       <section>
         <h2>页面设置</h2>
         <label>宽度 (px)
-          <input type="number" id="page-width" min="200" value="900">
+          <input type="number" id="page-width" min="200" value="1000">
         </label>
         <label>高度 (px)
-          <input type="number" id="page-height" min="200" value="1200">
+          <input type="number" id="page-height" min="200" value="1600">
         </label>
       </section>
       <section>
         <h2>漫画区域</h2>
         <label>上下间隙 (px)
-          <input type="number" id="area-margin-y" min="0" value="80">
+          <input type="number" id="area-margin-y" min="0" value="60">
         </label>
         <label>左右间隙 (px)
-          <input type="number" id="area-margin-x" min="0" value="80">
+          <input type="number" id="area-margin-x" min="0" value="60">
+        </label>
+        <label>格框间隙颜色
+          <select id="gap-color">
+            <option value="white" selected>白色</option>
+            <option value="black">黑色</option>
+          </select>
         </label>
         <label>格框粗细 (px)
-          <input type="number" id="frame-thickness" min="1" value="6">
+          <input type="number" id="frame-thickness" min="1" value="4">
         </label>
       </section>
       <section>
         <h2>格子切分</h2>
         <label>纵切间隙 (px)
-          <input type="number" id="slice-gap-x" min="0" value="24">
+          <input type="number" id="slice-gap-x" min="0" value="16">
         </label>
         <label>横切间隙 (px)
           <input type="number" id="slice-gap-y" min="0" value="24">
@@ -48,15 +54,6 @@
           <div class="control-block">
             <label>导入图片
               <input type="file" id="panel-image" accept="image/*">
-            </label>
-            <label>缩放
-              <input type="range" id="image-scale" min="0.1" max="3" step="0.01" value="1">
-            </label>
-            <label>水平偏移
-              <input type="range" id="image-offset-x" min="-400" max="400" step="1" value="0">
-            </label>
-            <label>垂直偏移
-              <input type="range" id="image-offset-y" min="-400" max="400" step="1" value="0">
             </label>
             <label>旋转 (°)
               <input type="range" id="image-rotation" min="-180" max="180" step="1" value="0">
@@ -86,7 +83,7 @@
             <select id="bubble-type">
               <option value="ellipse">椭圆</option>
               <option value="rectangle">矩形</option>
-              <option value="cloud">云朵</option>
+              <option value="pointer">尖角椭圆</option>
             </select>
           </label>
           <label>文字大小
@@ -94,6 +91,9 @@
           </label>
           <label>内边距 (px)
             <input type="number" id="bubble-padding" min="0" max="80" value="16">
+          </label>
+          <label>对话框粗细 (px)
+            <input type="number" id="bubble-stroke" min="1" max="20" value="5">
           </label>
           <label>内容
             <textarea id="bubble-text" rows="4"></textarea>
@@ -103,10 +103,10 @@
     </aside>
     <main class="workspace">
       <div id="stage-container" class="stage-container">
+        <div id="page-size-indicator" class="page-size-indicator"></div>
         <div id="page-container">
           <div id="page" class="page" data-mode="view">
             <div id="comic-area" class="comic-area"></div>
-            <div id="comic-area-label" class="comic-area-label"></div>
           </div>
         </div>
       </div>
@@ -114,9 +114,27 @@
     <aside class="layers-panel">
       <h2>图层</h2>
       <ul id="layer-list"></ul>
+      <section class="export-section">
+        <h3>导出漫画</h3>
+        <label>格式
+          <select id="export-format">
+            <option value="jpg" selected>JPG</option>
+            <option value="png">PNG</option>
+          </select>
+        </label>
+        <label>质量
+          <select id="export-quality">
+            <option value="1" selected>高</option>
+            <option value="0.75">中</option>
+            <option value="0.5">低</option>
+          </select>
+        </label>
+        <button id="export-image" class="primary">导出图片</button>
+      </section>
     </aside>
   </div>
   <div id="tooltip" class="tooltip" hidden></div>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
