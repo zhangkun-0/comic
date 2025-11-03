@@ -51,6 +51,10 @@ const overlay = {
   box: null,
   handles: new Map(),
   tailHandle: null,
+  pro5Handles: {
+    apex: null,
+    aim: null,
+  },
 };
 
 let imagePickerInFlight = false;
@@ -247,6 +251,152 @@ function screenDeltaToWorld(deltaX, deltaY) {
   };
 }
 
+function clientToWorldPoint(event) {
+  const svg = elements.bubbleLayer;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) {
+    return { x: 0, y: 0 };
+  }
+  const inverted = ctm.inverse();
+  const result = point.matrixTransform(inverted);
+  return { x: result.x, y: result.y };
+}
+
+function normToAbs(bubble, point) {
+  return {
+    x: bubble.x + bubble.width * point.nx,
+    y: bubble.y + bubble.height * point.ny,
+  };
+}
+
+function absToNorm(bubble, point) {
+  return {
+    nx: (point.x - bubble.x) / bubble.width,
+    ny: (point.y - bubble.y) / bubble.height,
+  };
+}
+
+function ellipseFromBubble(bubble) {
+  const inset = Math.max(1, bubble.strokeWidth * 0.5);
+  const rx = Math.max(8, bubble.width / 2 - inset);
+  const ry = Math.max(8, bubble.height / 2 - inset);
+  const cx = bubble.x + bubble.width / 2;
+  const cy = bubble.y + bubble.height / 2;
+  return { cx, cy, rx, ry };
+}
+
+function rot(ux, uy, radians) {
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: ux * cos - uy * sin,
+    y: ux * sin + uy * cos,
+  };
+}
+
+function rayIntersectEllipse(px, py, ux, uy, cx, cy, rx, ry) {
+  const length = Math.hypot(ux, uy) || 1;
+  const dxNorm = ux / length;
+  const dyNorm = uy / length;
+  const dx = px - cx;
+  const dy = py - cy;
+  const A = (dxNorm * dxNorm) / (rx * rx) + (dyNorm * dyNorm) / (ry * ry);
+  const B =
+    (2 * dx * dxNorm) / (rx * rx) +
+    (2 * dy * dyNorm) / (ry * ry);
+  const C = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) - 1;
+  const D = B * B - 4 * A * C;
+  if (D < 0) return null;
+  const sqrtD = Math.sqrt(D);
+  const t1 = (-B - sqrtD) / (2 * A);
+  const t2 = (-B + sqrtD) / (2 * A);
+  const candidates = [t1, t2].filter((t) => t > 0);
+  if (candidates.length === 0) return null;
+  const t = Math.min(...candidates);
+  return {
+    x: px + dxNorm * t,
+    y: py + dyNorm * t,
+    t,
+  };
+}
+
+function tailPath5deg(bubble) {
+  if (!bubble.tail || !bubble.tail.apex || !bubble.tail.aim) {
+    return { d: '' };
+  }
+  const angleDeg = bubble.tail?.angleDeg ?? 5;
+  const halfAngle = ((angleDeg * Math.PI) / 180) / 2;
+  const ellipse = ellipseFromBubble(bubble);
+  const apex = normToAbs(bubble, bubble.tail.apex);
+  const aim = normToAbs(bubble, bubble.tail.aim);
+
+  const dir = { x: aim.x - apex.x, y: aim.y - apex.y };
+  const length = Math.hypot(dir.x, dir.y) || 1;
+  const unit = { x: dir.x / length, y: dir.y / length };
+  const ray1 = rot(unit.x, unit.y, halfAngle);
+  const ray2 = rot(unit.x, unit.y, -halfAngle);
+
+  let base1 = rayIntersectEllipse(
+    apex.x,
+    apex.y,
+    ray1.x,
+    ray1.y,
+    ellipse.cx,
+    ellipse.cy,
+    ellipse.rx,
+    ellipse.ry,
+  );
+  let base2 = rayIntersectEllipse(
+    apex.x,
+    apex.y,
+    ray2.x,
+    ray2.y,
+    ellipse.cx,
+    ellipse.cy,
+    ellipse.rx,
+    ellipse.ry,
+  );
+
+  if (!base1 || !base2) {
+    const fallbackDir = { x: ellipse.cx - apex.x, y: ellipse.cy - apex.y };
+    const fallbackLength = Math.hypot(fallbackDir.x, fallbackDir.y) || 1;
+    const fallbackUnit = { x: fallbackDir.x / fallbackLength, y: fallbackDir.y / fallbackLength };
+    const fallbackRay1 = rot(fallbackUnit.x, fallbackUnit.y, halfAngle);
+    const fallbackRay2 = rot(fallbackUnit.x, fallbackUnit.y, -halfAngle);
+    base1 = rayIntersectEllipse(
+      apex.x,
+      apex.y,
+      fallbackRay1.x,
+      fallbackRay1.y,
+      ellipse.cx,
+      ellipse.cy,
+      ellipse.rx,
+      ellipse.ry,
+    );
+    base2 = rayIntersectEllipse(
+      apex.x,
+      apex.y,
+      fallbackRay2.x,
+      fallbackRay2.y,
+      ellipse.cx,
+      ellipse.cy,
+      ellipse.rx,
+      ellipse.ry,
+    );
+  }
+
+  if (!base1 || !base2) {
+    return { d: '' };
+  }
+
+  return {
+    d: `M ${base1.x} ${base1.y} L ${apex.x} ${apex.y} L ${base2.x} ${base2.y} Z`,
+  };
+}
+
 function insertBubbleFromControls() {
   const type = elements.bubbleType.value;
   insertBubble(type);
@@ -279,6 +429,9 @@ function insertBubble(type) {
 }
 
 function createDefaultTail(type, x, y, width, height) {
+  if (type === 'speech-pro-5deg') {
+    return createDefaultTailPro5(x, y, width, height);
+  }
   const base = { anchor: { x: 0.5, y: 1 }, offset: { x: 0, y: 0.45 } };
   if (type === 'speech-left') {
     base.anchor = { x: 0, y: 0.15 };
@@ -300,6 +453,33 @@ function createDefaultTail(type, x, y, width, height) {
     return base;
   }
   return null;
+}
+
+function createDefaultTailPro5(x, y, width, height) {
+  return {
+    mode: 'fixedAngle',
+    angleDeg: 5,
+    apex: { nx: 0.37, ny: 1.35 },
+    aim: { nx: 0.33, ny: 0.95 },
+  };
+}
+
+function cloneTail(tail) {
+  if (!tail) return null;
+  const cloned = { ...tail };
+  if (tail.anchor) {
+    cloned.anchor = { ...tail.anchor };
+  }
+  if (tail.offset) {
+    cloned.offset = { ...tail.offset };
+  }
+  if (tail.apex) {
+    cloned.apex = { ...tail.apex };
+  }
+  if (tail.aim) {
+    cloned.aim = { ...tail.aim };
+  }
+  return cloned;
 }
 
 function setSelectedBubble(id) {
@@ -472,12 +652,7 @@ function startResize(event, direction) {
     bubbleStart: { x: bubble.x, y: bubble.y, width: bubble.width, height: bubble.height },
     startX: event.clientX,
     startY: event.clientY,
-    tailSnapshot: bubble.tail
-      ? {
-          anchor: { ...bubble.tail.anchor },
-          offset: { ...bubble.tail.offset },
-        }
-      : null,
+    tailSnapshot: bubble.tail ? cloneTail(bubble.tail) : null,
   };
   elements.viewport.setPointerCapture(event.pointerId);
 }
@@ -486,7 +661,7 @@ function startTailDrag(event) {
   event.preventDefault();
   event.stopPropagation();
   const bubble = getSelectedBubble();
-  if (!bubble || !bubble.tail) return;
+  if (!bubble || !bubble.tail || bubble.type === 'speech-pro-5deg') return;
   state.interaction = {
     type: 'tail',
     pointerId: event.pointerId,
@@ -538,12 +713,27 @@ function handlePointerMove(event) {
     };
     setTailTip(bubble, newTip.x, newTip.y);
     render();
+  } else if (state.interaction.type === 'pro5-handle') {
+    const bubble = state.bubbles.find((item) => item.id === state.interaction.bubbleId);
+    if (!bubble || !bubble.tail) return;
+    const worldPoint = clientToWorldPoint(event);
+    if (state.interaction.handle === 'apex') {
+      bubble.tail.apex = absToNorm(bubble, worldPoint);
+    } else if (state.interaction.handle === 'aim') {
+      bubble.tail.aim = absToNorm(bubble, worldPoint);
+    }
+    render();
   }
 }
 
 function handlePointerUp(event) {
   if (!state.interaction || state.interaction.pointerId !== event.pointerId) return;
-  if (state.interaction.type === 'move-bubble' || state.interaction.type === 'resize' || state.interaction.type === 'tail') {
+  if (
+    state.interaction.type === 'move-bubble' ||
+    state.interaction.type === 'resize' ||
+    state.interaction.type === 'tail' ||
+    state.interaction.type === 'pro5-handle'
+  ) {
     pushHistory();
   }
   if (state.interaction.type === 'pan') {
@@ -582,13 +772,16 @@ function applyResize(bubble, direction, delta) {
   bubble.y = y;
   bubble.width = width;
   bubble.height = height;
-  if (bubble.tail && state.interaction.tailSnapshot) {
-    bubble.tail.anchor = { ...state.interaction.tailSnapshot.anchor };
-    bubble.tail.offset = { ...state.interaction.tailSnapshot.offset };
+  if (state.interaction.tailSnapshot) {
+    bubble.tail = cloneTail(state.interaction.tailSnapshot);
   }
 }
 
 function getTailBase(bubble) {
+  if (!bubble.tail) return null;
+  if (bubble.type === 'speech-pro-5deg' && bubble.tail.aim) {
+    return normToAbs(bubble, bubble.tail.aim);
+  }
   const { anchor } = bubble.tail;
   return {
     x: bubble.x + bubble.width * anchor.x,
@@ -598,7 +791,11 @@ function getTailBase(bubble) {
 
 function getTailTip(bubble) {
   if (!bubble.tail) return null;
+  if (bubble.type === 'speech-pro-5deg' && bubble.tail.apex) {
+    return normToAbs(bubble, bubble.tail.apex);
+  }
   const base = getTailBase(bubble);
+  if (!base) return null;
   return {
     x: base.x + bubble.width * bubble.tail.offset.x,
     y: base.y + bubble.height * bubble.tail.offset.y,
@@ -607,6 +804,10 @@ function getTailTip(bubble) {
 
 function setTailTip(bubble, x, y) {
   if (!bubble.tail) return;
+  if (bubble.type === 'speech-pro-5deg') {
+    bubble.tail.apex = absToNorm(bubble, { x, y });
+    return;
+  }
   const centerX = bubble.x + bubble.width / 2;
   const centerY = bubble.y + bubble.height / 2;
   const dx = x - centerX;
@@ -784,6 +985,15 @@ function renderBubbles() {
 }
 
 function createBodyShape(bubble) {
+  if (bubble.type === 'speech-pro-5deg') {
+    const ellipse = document.createElementNS(svgNS, 'ellipse');
+    const { cx, cy, rx, ry } = ellipseFromBubble(bubble);
+    ellipse.setAttribute('cx', cx);
+    ellipse.setAttribute('cy', cy);
+    ellipse.setAttribute('rx', rx);
+    ellipse.setAttribute('ry', ry);
+    return ellipse;
+  }
   if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('d', createRectanglePath(bubble));
@@ -805,6 +1015,15 @@ function createBodyShape(bubble) {
 
 function createTailShape(bubble) {
   if (!bubble.tail) return null;
+  if (bubble.type === 'speech-pro-5deg') {
+    const path = document.createElementNS(svgNS, 'path');
+    const { d } = tailPath5deg(bubble);
+    if (!d) {
+      return null;
+    }
+    path.setAttribute('d', d);
+    return path;
+  }
   if (bubble.type.startsWith('thought')) {
     const group = document.createElementNS(svgNS, 'g');
     const tip = getTailTip(bubble);
@@ -910,10 +1129,12 @@ function getOverlayRect(bubble) {
   };
   if (bubble.tail) {
     const tip = getTailTip(bubble);
-    bodyRect.minX = Math.min(bodyRect.minX, tip.x);
-    bodyRect.maxX = Math.max(bodyRect.maxX, tip.x);
-    bodyRect.minY = Math.min(bodyRect.minY, tip.y);
-    bodyRect.maxY = Math.max(bodyRect.maxY, tip.y);
+    if (tip) {
+      bodyRect.minX = Math.min(bodyRect.minX, tip.x);
+      bodyRect.maxX = Math.max(bodyRect.maxX, tip.x);
+      bodyRect.minY = Math.min(bodyRect.minY, tip.y);
+      bodyRect.maxY = Math.max(bodyRect.maxY, tip.y);
+    }
   }
   return {
     x: bodyRect.minX - CONTROL_PADDING,
@@ -928,6 +1149,10 @@ function updateSelectionOverlay() {
   if (!bubble) {
     elements.selectionOverlay.classList.add('hidden');
     elements.positionIndicator.textContent = '';
+    if (overlay.tailHandle) {
+      overlay.tailHandle.style.display = 'none';
+    }
+    removePro5Handles();
     return;
   }
   elements.selectionOverlay.classList.remove('hidden');
@@ -947,7 +1172,9 @@ function updateSelectionOverlay() {
     handle.style.top = `${screenPos.y}px`;
   });
 
-  if (bubble.tail) {
+  if (bubble.type === 'speech-pro-5deg') {
+    overlay.tailHandle.style.display = 'none';
+  } else if (bubble.tail) {
     overlay.tailHandle.style.display = 'block';
     const tailTip = getTailTip(bubble);
     const screenPos = worldToScreen(tailTip);
@@ -956,7 +1183,92 @@ function updateSelectionOverlay() {
   } else {
     overlay.tailHandle.style.display = 'none';
   }
+  renderPro5degHandles(bubble);
   elements.positionIndicator.textContent = `位置：(${bubble.x.toFixed(0)}, ${bubble.y.toFixed(0)}) 尺寸：${bubble.width.toFixed(0)}×${bubble.height.toFixed(0)}`;
+}
+
+function ensurePro5Handle(type, color) {
+  if (overlay.pro5Handles[type]) {
+    return overlay.pro5Handles[type];
+  }
+  const handle = document.createElement('div');
+  handle.className = `pro5-handle pro5-handle-${type}`;
+  handle.dataset.handleType = type;
+  handle.style.position = 'absolute';
+  handle.style.width = '14px';
+  handle.style.height = '14px';
+  handle.style.marginLeft = '-7px';
+  handle.style.marginTop = '-7px';
+  handle.style.borderRadius = '50%';
+  handle.style.border = '2px solid #00000099';
+  handle.style.background = color;
+  handle.style.cursor = 'pointer';
+  handle.style.zIndex = '2';
+  handle.style.pointerEvents = 'auto';
+  handle.addEventListener('pointerdown', onPro5HandlePointerDown);
+  elements.selectionOverlay.appendChild(handle);
+  overlay.pro5Handles[type] = handle;
+  return handle;
+}
+
+function removePro5Handles() {
+  Object.keys(overlay.pro5Handles).forEach((key) => {
+    const handle = overlay.pro5Handles[key];
+    if (handle) {
+      handle.remove();
+      overlay.pro5Handles[key] = null;
+    }
+  });
+}
+
+function renderPro5degHandles(bubble) {
+  if (
+    !bubble ||
+    bubble.type !== 'speech-pro-5deg' ||
+    !bubble.tail ||
+    !bubble.tail.apex ||
+    !bubble.tail.aim
+  ) {
+    removePro5Handles();
+    return;
+  }
+
+  const apexHandle = ensurePro5Handle('apex', '#f59e0b');
+  const aimHandle = ensurePro5Handle('aim', '#ef4444');
+
+  const apexAbs = normToAbs(bubble, bubble.tail.apex);
+  const aimAbs = normToAbs(bubble, bubble.tail.aim);
+
+  const apexScreen = worldToScreen(apexAbs);
+  const aimScreen = worldToScreen(aimAbs);
+
+  apexHandle.style.display = 'block';
+  apexHandle.style.left = `${apexScreen.x}px`;
+  apexHandle.style.top = `${apexScreen.y}px`;
+
+  aimHandle.style.display = 'block';
+  aimHandle.style.left = `${aimScreen.x}px`;
+  aimHandle.style.top = `${aimScreen.y}px`;
+}
+
+function onPro5HandlePointerDown(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const handleType = event.currentTarget.dataset.handleType;
+  const bubble = getSelectedBubble();
+  if (!handleType || !bubble || bubble.type !== 'speech-pro-5deg' || !bubble.tail) {
+    return;
+  }
+  if (state.inlineEditingBubbleId) {
+    elements.inlineEditor.blur();
+  }
+  state.interaction = {
+    type: 'pro5-handle',
+    pointerId: event.pointerId,
+    bubbleId: bubble.id,
+    handle: handleType,
+  };
+  elements.viewport.setPointerCapture(event.pointerId);
 }
 
 function computeHandlePosition(bubble, direction) {
@@ -1085,7 +1397,14 @@ function drawBubblesToContext(ctx, options = {}) {
     ctx.strokeStyle = '#11141b';
     ctx.fillStyle = '#ffffff';
     if (includeBodies) {
-      if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
+      if (bubble.type === 'speech-pro-5deg') {
+        const { cx, cy, rx, ry } = ellipseFromBubble(bubble);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
         drawPath(ctx, createRectanglePath(bubble));
       } else if (bubble.type.startsWith('thought')) {
         ctx.beginPath();
@@ -1105,7 +1424,12 @@ function drawBubblesToContext(ctx, options = {}) {
         drawPath(ctx, createRoundedRectPath(bubble.x, bubble.y, bubble.width, bubble.height, Math.min(bubble.width, bubble.height) * 0.45));
       }
       if (bubble.tail) {
-        if (bubble.type.startsWith('thought')) {
+        if (bubble.type === 'speech-pro-5deg') {
+          const { d } = tailPath5deg(bubble);
+          if (d) {
+            drawPath(ctx, d);
+          }
+        } else if (bubble.type.startsWith('thought')) {
           drawThoughtTail(ctx, bubble);
         } else {
           drawPath(ctx, buildSpeechTailPath(bubble));
