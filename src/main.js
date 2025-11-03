@@ -53,6 +53,8 @@ const overlay = {
   tailHandle: null,
 };
 
+let imagePickerInFlight = false;
+
 function init() {
   setupSelectionOverlay();
   attachEvents();
@@ -98,6 +100,7 @@ function attachEvents() {
 
   elements.viewport.addEventListener('wheel', handleWheel, { passive: false });
   elements.viewport.addEventListener('pointerdown', handleViewportPointerDown);
+  elements.viewport.addEventListener('dblclick', handleViewportDoubleClick);
   window.addEventListener('pointermove', handlePointerMove);
   window.addEventListener('pointerup', handlePointerUp);
 
@@ -108,31 +111,90 @@ function attachEvents() {
 }
 
 function handleImportButtonClick() {
-  const input = elements.hiddenImageInput;
-  if (!input) return;
-  input.value = '';
-  try {
-    if (typeof input.showPicker === 'function') {
-      input.showPicker();
-      return;
-    }
-  } catch (error) {
-    if (error?.name !== 'NotAllowedError') {
-      console.error(error);
-    }
+  void openImagePicker();
+}
+
+function handleViewportDoubleClick(event) {
+  if (event.target.closest('[data-bubble-id]')) {
+    return;
   }
-  input.click();
+  if (state.inlineEditingBubbleId) {
+    return;
+  }
+  void openImagePicker();
 }
 
 function handleImageSelection(event) {
   const [file] = event.target.files;
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    loadImage(reader.result);
-  };
-  reader.readAsDataURL(file);
   event.target.value = '';
+  if (!file) return;
+  readFileAsDataURL(file)
+    .then((dataUrl) => loadImage(dataUrl))
+    .catch((error) => {
+      console.error('读取图片失败', error);
+    });
+}
+
+async function openImagePicker() {
+  if (imagePickerInFlight) {
+    return;
+  }
+  imagePickerInFlight = true;
+  try {
+    if (typeof window.showOpenFilePicker === 'function') {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [
+            {
+              description: 'Images',
+              accept: {
+                'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'],
+              },
+            },
+          ],
+        });
+        if (!handle) {
+          return;
+        }
+        const file = await handle.getFile();
+        const dataUrl = await readFileAsDataURL(file);
+        loadImage(dataUrl);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('使用 showOpenFilePicker 失败，尝试使用隐藏输入作为后备。', error);
+      }
+    }
+    const input = elements.hiddenImageInput;
+    if (!input) {
+      return;
+    }
+    input.value = '';
+    input.click();
+  } finally {
+    imagePickerInFlight = false;
+  }
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') {
+        resolve(result);
+      } else {
+        reject(new Error('无法解析为 DataURL'));
+      }
+    };
+    reader.onerror = () => {
+      reject(reader.error || new Error('文件读取失败'));
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function loadImage(dataUrl) {

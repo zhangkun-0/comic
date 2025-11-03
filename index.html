@@ -11,7 +11,7 @@
       <aside class="controls" id="left-panel">
         <h1>漫画气泡</h1>
         <div class="section">
-          <button id="import-image" class="primary">导入图片</button>
+          <button id="import-image" class="primary" type="button">导入图片</button>
           <input
             id="hidden-image-input"
             class="visually-hidden-input"
@@ -36,8 +36,8 @@
           <input id="stroke-width" type="number" min="1" max="20" value="4" />
         </div>
         <div class="section button-row">
-          <button id="insert-bubble" class="primary">插入对话框</button>
-          <button id="remove-bubble" class="danger" disabled>删除对话框</button>
+          <button id="insert-bubble" class="primary" type="button">插入对话框</button>
+          <button id="remove-bubble" class="danger" type="button" disabled>删除对话框</button>
         </div>
         <p class="hint">选中对话框后按 Delete 键也可删除。</p>
       </aside>
@@ -73,14 +73,19 @@
           <input id="font-size" type="number" min="10" max="120" value="32" />
         </div>
         <div class="section">
-          <button id="toggle-bold" class="secondary" data-active="false">字体加粗</button>
+          <button
+            id="toggle-bold"
+            class="secondary"
+            type="button"
+            data-active="false"
+          >字体加粗</button>
         </div>
         <div class="section">
           <label for="text-content">文字输入</label>
           <textarea id="text-content" rows="6" spellcheck="false"></textarea>
         </div>
         <div class="section button-row">
-          <button id="undo" class="secondary">撤销</button>
+          <button id="undo" class="secondary" type="button">撤销</button>
         </div>
         <div class="section">
           <label for="export-format">导出选项</label>
@@ -91,7 +96,7 @@
           </select>
         </div>
         <div class="section">
-          <button id="export" class="primary">导出图片</button>
+          <button id="export" class="primary" type="button">导出图片</button>
         </div>
       </aside>
     </div>
