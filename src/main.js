@@ -84,7 +84,7 @@ function setupSelectionOverlay() {
 }
 
 function attachEvents() {
-  elements.importButton.addEventListener('click', () => elements.hiddenImageInput.click());
+  elements.importButton.addEventListener('click', handleImportButtonClick);
   elements.hiddenImageInput.addEventListener('change', handleImageSelection);
   elements.insertBubble.addEventListener('click', insertBubbleFromControls);
   elements.removeBubble.addEventListener('click', removeSelectedBubble);
@@ -105,6 +105,23 @@ function attachEvents() {
   elements.bubbleLayer.addEventListener('dblclick', handleBubbleDoubleClick);
 
   document.addEventListener('keydown', handleKeyDown);
+}
+
+function handleImportButtonClick() {
+  const input = elements.hiddenImageInput;
+  if (!input) return;
+  input.value = '';
+  try {
+    if (typeof input.showPicker === 'function') {
+      input.showPicker();
+      return;
+    }
+  } catch (error) {
+    if (error?.name !== 'NotAllowedError') {
+      console.error(error);
+    }
+  }
+  input.click();
 }
 
 function handleImageSelection(event) {
