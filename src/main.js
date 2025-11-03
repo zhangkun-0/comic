@@ -111,17 +111,18 @@ function attachEvents() {
 }
 
 function handleImportButtonClick() {
-  void openImagePicker();
+  openImagePicker();
 }
 
 function handleViewportDoubleClick(event) {
-  if (event.target.closest('[data-bubble-id]')) {
+  const target = event.target;
+  if (target instanceof Element && target.closest('[data-bubble-id]')) {
     return;
   }
   if (state.inlineEditingBubbleId) {
     return;
   }
-  void openImagePicker();
+  openImagePicker();
 }
 
 function handleImageSelection(event) {
@@ -135,45 +136,32 @@ function handleImageSelection(event) {
     });
 }
 
-async function openImagePicker() {
+function openImagePicker() {
   if (imagePickerInFlight) {
     return;
   }
   imagePickerInFlight = true;
   try {
-    if (typeof window.showOpenFilePicker === 'function') {
-      try {
-        const [handle] = await window.showOpenFilePicker({
-          multiple: false,
-          types: [
-            {
-              description: 'Images',
-              accept: {
-                'image/*': ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'],
-              },
-            },
-          ],
-        });
-        if (!handle) {
-          return;
-        }
-        const file = await handle.getFile();
-        const dataUrl = await readFileAsDataURL(file);
-        loadImage(dataUrl);
-        return;
-      } catch (error) {
-        if (error?.name === 'AbortError') {
-          return;
-        }
-        console.warn('使用 showOpenFilePicker 失败，尝试使用隐藏输入作为后备。', error);
-      }
-    }
     const input = elements.hiddenImageInput;
     if (!input) {
       return;
     }
     input.value = '';
-    input.click();
+    let pickerShown = false;
+    if (typeof input.showPicker === 'function') {
+      try {
+        input.showPicker();
+        pickerShown = true;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('showPicker 不可用，回退到 click()', error);
+      }
+    }
+    if (!pickerShown) {
+      input.click();
+    }
   } finally {
     imagePickerInFlight = false;
   }
