@@ -84,6 +84,22 @@
           <label for="text-content">文字输入</label>
           <textarea id="text-content" rows="6" spellcheck="false"></textarea>
         </div>
+        <div class="section auto-wrap-controls">
+          <div class="auto-wrap-header">
+            <span>自动换行</span>
+            <button
+              id="toggle-auto-wrap"
+              class="secondary"
+              type="button"
+              data-enabled="true"
+            >关闭自动换行</button>
+          </div>
+          <label for="line-length">每行字数</label>
+          <input id="line-length" type="range" min="4" max="10" value="5" />
+          <div class="slider-value">
+            <span id="line-length-value">5</span> 字/行
+          </div>
+        </div>
         <div class="section button-row">
           <button id="undo" class="secondary" type="button">撤销</button>
         </div>

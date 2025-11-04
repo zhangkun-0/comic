@@ -20,6 +20,9 @@ const elements = {
   fontSize: document.getElementById('font-size'),
   toggleBold: document.getElementById('toggle-bold'),
   textContent: document.getElementById('text-content'),
+  autoWrapToggle: document.getElementById('toggle-auto-wrap'),
+  lineLength: document.getElementById('line-length'),
+  lineLengthValue: document.getElementById('line-length-value'),
   undo: document.getElementById('undo'),
   exportFormat: document.getElementById('export-format'),
   exportButton: document.getElementById('export'),
@@ -29,6 +32,8 @@ const elements = {
 const HANDLE_DIRECTIONS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const CONTROL_PADDING = 28;
 const MIN_BODY_SIZE = 80;
+const SPEECH_TAIL_ANGLE_DEGREES = 8;
+const TRAILING_PUNCTUATION = new Set(['，', ',', '。', '.', '、', '！', '!', '？', '?', '；', ';', '：', ':']);
 
 const state = {
   canvas: { width: 1200, height: 1600 },
@@ -41,11 +46,113 @@ const state = {
   fontFamily: elements.fontFamily.value,
   fontSize: Number(elements.fontSize.value),
   bold: false,
+  autoWrap: {
+    enabled: true,
+    charactersPerLine: 5,
+  },
   history: [],
   historyIndex: -1,
   interaction: null,
   inlineEditingBubbleId: null,
 };
+
+function getBubbleRawText(bubble) {
+  if (typeof bubble.rawText !== 'string') {
+    bubble.rawText = typeof bubble.text === 'string' ? bubble.text : '';
+  }
+  return bubble.rawText;
+}
+
+function setBubbleRawText(bubble, value) {
+  bubble.rawText = value;
+}
+
+function getBubbleDisplayText(bubble) {
+  const raw = getBubbleRawText(bubble);
+  if (!raw) return '';
+  if (!state.autoWrap.enabled) {
+    return raw;
+  }
+  return applyAutoWrap(raw, state.autoWrap.charactersPerLine);
+}
+
+function updateBubbleText(bubble, rawText, options = {}) {
+  const normalized = (rawText ?? '').replace(/\r\n?/g, '\n');
+  setBubbleRawText(bubble, normalized);
+  if (options.autoFit !== false) {
+    autoFitBubbleToText(bubble, options.fitOptions || {});
+  }
+}
+
+function applyAutoWrap(text, lineLength) {
+  if (!text) return '';
+  const maxPerLine = clamp(Math.floor(lineLength) || 5, 1, 20);
+  const lines = [];
+  let current = '';
+  let count = 0;
+  const flush = () => {
+    lines.push(current);
+    current = '';
+    count = 0;
+  };
+  for (const char of text) {
+    if (char === '\n') {
+      flush();
+      continue;
+    }
+    if (TRAILING_PUNCTUATION.has(char)) {
+      if (!current) {
+        let attached = false;
+        for (let index = lines.length - 1; index >= 0; index -= 1) {
+          if (lines[index]) {
+            lines[index] += char;
+            attached = true;
+            break;
+          }
+        }
+        if (!attached) {
+          current += char;
+        }
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (count >= maxPerLine) {
+      flush();
+    }
+    current += char;
+    count += 1;
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.join('\n');
+}
+
+function rawIndexFromDisplay(text, displayIndex) {
+  let raw = 0;
+  for (let i = 0; i < displayIndex && i < text.length; i += 1) {
+    if (text[i] !== '\n') {
+      raw += 1;
+    }
+  }
+  return raw;
+}
+
+function displayIndexFromRaw(text, rawIndex) {
+  if (rawIndex <= 0) return 0;
+  let raw = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '\n') {
+      raw += 1;
+      if (raw === rawIndex) {
+        return i + 1;
+      }
+    }
+  }
+  return text.length;
+}
 
 const overlay = {
   box: null,
@@ -58,6 +165,7 @@ let imagePickerInFlight = false;
 function init() {
   setupSelectionOverlay();
   attachEvents();
+  updateAutoWrapControls();
   updateSceneSize(state.canvas.width, state.canvas.height);
   fitViewport();
   updateSceneTransform();
@@ -95,6 +203,8 @@ function attachEvents() {
   elements.fontSize.addEventListener('change', handleFontSizeChange);
   elements.toggleBold.addEventListener('click', toggleBold);
   elements.textContent.addEventListener('input', handleTextInput);
+  elements.autoWrapToggle.addEventListener('click', toggleAutoWrap);
+  elements.lineLength.addEventListener('input', handleLineLengthInput);
   elements.undo.addEventListener('click', undo);
   elements.exportButton.addEventListener('click', exportArtwork);
 
@@ -264,12 +374,13 @@ function insertBubble(type) {
     y,
     width,
     height,
-    padding: Math.max(28, Math.min(width, height) * 0.12),
+    padding: Math.max(36, Math.min(width, height) * 0.18),
     strokeWidth: Number(elements.strokeWidth.value) || state.defaultStrokeWidth,
     fontFamily: state.fontFamily,
     fontSize: state.fontSize,
     bold: state.bold,
     text: '',
+    rawText: '',
     tail: createDefaultTail(type, x, y, width, height),
   };
   state.bubbles.push(bubble);
@@ -372,12 +483,61 @@ function toggleBold() {
   }
 }
 
+function updateAutoWrapControls() {
+  if (elements.autoWrapToggle) {
+    elements.autoWrapToggle.dataset.enabled = state.autoWrap.enabled ? 'true' : 'false';
+    elements.autoWrapToggle.textContent = state.autoWrap.enabled ? '关闭自动换行' : '开启自动换行';
+  }
+  if (elements.lineLength) {
+    elements.lineLength.disabled = !state.autoWrap.enabled;
+    elements.lineLength.value = String(state.autoWrap.charactersPerLine);
+  }
+  if (elements.lineLengthValue) {
+    elements.lineLengthValue.textContent = String(state.autoWrap.charactersPerLine);
+  }
+}
+
+function refitAllBubblesToText() {
+  state.bubbles.forEach((bubble) => {
+    autoFitBubbleToText(bubble);
+  });
+  render();
+  if (state.inlineEditingBubbleId) {
+    const editing = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
+    if (editing) {
+      openInlineEditor(editing);
+    }
+  }
+}
+
+function toggleAutoWrap() {
+  state.autoWrap.enabled = !state.autoWrap.enabled;
+  updateAutoWrapControls();
+  refitAllBubblesToText();
+  updateControlsFromSelection();
+  pushHistory();
+}
+
+function handleLineLengthInput() {
+  const value = clamp(Number(elements.lineLength.value) || state.autoWrap.charactersPerLine, 4, 10);
+  state.autoWrap.charactersPerLine = value;
+  updateAutoWrapControls();
+  if (state.autoWrap.enabled) {
+    refitAllBubblesToText();
+  } else {
+    render();
+  }
+  scheduleHistoryCommit();
+}
+
 function handleTextInput() {
   const bubble = getSelectedBubble();
   if (!bubble) return;
-  bubble.text = elements.textContent.value;
-  autoFitBubbleToText(bubble);
+  updateBubbleText(bubble, elements.textContent.value);
   render();
+  if (state.inlineEditingBubbleId === bubble.id) {
+    openInlineEditor(bubble);
+  }
   scheduleHistoryCommit();
 }
 
@@ -627,12 +787,15 @@ function setTailTip(bubble, x, y) {
 
 function autoFitBubbleToText(bubble, options = {}) {
   const { lockCenter = true, allowShrink = true } = options;
-  const padding = Math.max(20, bubble.padding);
+  const basePadding = Math.max(36, Math.min(bubble.width, bubble.height) * 0.18);
+  const padding = Math.max(basePadding, bubble.padding || 0);
+  bubble.padding = padding;
   const measure = elements.measureBox;
   measure.style.fontFamily = bubble.fontFamily;
   measure.style.fontSize = `${bubble.fontSize}px`;
   measure.style.fontWeight = bubble.bold ? '700' : '400';
-  measure.textContent = bubble.text || '';
+  const displayText = getBubbleDisplayText(bubble);
+  measure.textContent = displayText || '';
   const textWidth = Math.max(measure.scrollWidth, measure.offsetWidth, 1);
   const textHeight = Math.max(measure.scrollHeight, measure.offsetHeight, 1);
   const targetWidth = textWidth + padding * 2;
@@ -664,7 +827,7 @@ function updateControlsFromSelection() {
   elements.fontFamily.value = bubble.fontFamily;
   elements.fontSize.value = bubble.fontSize;
   elements.toggleBold.dataset.active = bubble.bold ? 'true' : 'false';
-  elements.textContent.value = bubble.text;
+  elements.textContent.value = getBubbleRawText(bubble);
   elements.positionIndicator.textContent = `位置：(${bubble.x.toFixed(0)}, ${bubble.y.toFixed(0)}) 尺寸：${bubble.width.toFixed(0)}×${bubble.height.toFixed(0)}`;
 }
 
@@ -675,7 +838,7 @@ function openInlineEditor(bubble) {
   const width = bottomRight.x - topLeft.x;
   const height = bottomRight.y - topLeft.y;
   const editor = elements.inlineEditor;
-  editor.value = bubble.text;
+  editor.value = getBubbleDisplayText(bubble);
   editor.style.left = `${topLeft.x}px`;
   editor.style.top = `${topLeft.y}px`;
   editor.style.width = `${width}px`;
@@ -693,11 +856,12 @@ elements.inlineEditor.addEventListener('blur', () => {
   if (!state.inlineEditingBubbleId) return;
   const bubble = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
   if (!bubble) return;
-  bubble.text = elements.inlineEditor.value;
-  autoFitBubbleToText(bubble);
+  const editorValue = elements.inlineEditor.value;
+  const rawValue = state.autoWrap.enabled ? editorValue.replace(/\n/g, '') : editorValue;
+  updateBubbleText(bubble, rawValue);
   elements.inlineEditor.classList.add('hidden');
   state.inlineEditingBubbleId = null;
-  elements.textContent.value = bubble.text;
+  elements.textContent.value = rawValue;
   pushHistory();
   render();
 });
@@ -706,9 +870,28 @@ elements.inlineEditor.addEventListener('input', () => {
   if (!state.inlineEditingBubbleId) return;
   const bubble = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
   if (!bubble) return;
-  bubble.text = elements.inlineEditor.value;
-  autoFitBubbleToText(bubble);
-  elements.textContent.value = bubble.text;
+  const editor = elements.inlineEditor;
+  const editorValue = editor.value;
+  let rawStart = editor.selectionStart;
+  let rawEnd = editor.selectionEnd;
+  if (state.autoWrap.enabled) {
+    rawStart = rawIndexFromDisplay(editorValue, editor.selectionStart);
+    rawEnd = rawIndexFromDisplay(editorValue, editor.selectionEnd);
+  }
+  const rawValue = state.autoWrap.enabled ? editorValue.replace(/\n/g, '') : editorValue;
+  updateBubbleText(bubble, rawValue);
+  const displayText = getBubbleDisplayText(bubble);
+  if (displayText !== editorValue) {
+    editor.value = displayText;
+    if (state.autoWrap.enabled) {
+      const newStart = displayIndexFromRaw(displayText, rawStart);
+      const newEnd = displayIndexFromRaw(displayText, rawEnd);
+      editor.setSelectionRange(newStart, newEnd);
+    } else {
+      editor.setSelectionRange(rawStart, rawEnd);
+    }
+  }
+  elements.textContent.value = rawValue;
   render();
 });
 
@@ -775,7 +958,7 @@ function renderBubbles() {
     div.style.fontFamily = bubble.fontFamily;
     div.style.fontSize = `${bubble.fontSize}px`;
     div.style.fontWeight = bubble.bold ? '700' : '400';
-    div.textContent = bubble.text;
+    div.textContent = getBubbleDisplayText(bubble);
     textNode.appendChild(div);
     group.appendChild(textNode);
 
@@ -784,6 +967,11 @@ function renderBubbles() {
 }
 
 function createBodyShape(bubble) {
+  if (bubble.type === 'speech') {
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', createSpeechBubblePath(bubble));
+    return path;
+  }
   if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('d', createRectanglePath(bubble));
@@ -805,6 +993,9 @@ function createBodyShape(bubble) {
 
 function createTailShape(bubble) {
   if (!bubble.tail) return null;
+  if (bubble.type === 'speech') {
+    return null;
+  }
   if (bubble.type.startsWith('thought')) {
     const group = document.createElementNS(svgNS, 'g');
     const tip = getTailTip(bubble);
@@ -876,29 +1067,145 @@ function createRoundedRectPath(x, y, width, height, radius) {
   ].join(' ');
 }
 
-function buildSpeechTailPath(bubble) {
-  const tip = getTailTip(bubble);
-  const base = getTailBase(bubble);
-  const center = { x: bubble.x + bubble.width / 2, y: bubble.y + bubble.height / 2 };
-  const sideVector = { x: tip.x - center.x, y: tip.y - center.y };
-  const dominantHorizontal = Math.abs(sideVector.x) > Math.abs(sideVector.y);
-  let baseCenter = { x: base.x, y: base.y };
-  const baseWidth = Math.max(36, Math.min(bubble.width, bubble.height) * 0.25);
-  const baseHeight = Math.max(36, Math.min(bubble.width, bubble.height) * 0.25);
-  let p1;
-  let p2;
-  if (dominantHorizontal) {
-    baseCenter.y = clamp(tip.y, bubble.y + baseHeight * 0.3, bubble.y + bubble.height - baseHeight * 0.3);
-    const offset = baseHeight / 2;
-    p1 = { x: baseCenter.x, y: baseCenter.y - offset };
-    p2 = { x: baseCenter.x, y: baseCenter.y + offset };
+function createSpeechBubblePath(bubble) {
+  const tailInfo = computeTailGeometry(bubble);
+  const side = tailInfo?.side || null;
+  const { x, y, width, height } = bubble;
+  const radius = Math.min(width, height) * 0.45;
+  const path = [];
+  const topStartX = x + radius;
+  const topEndX = x + width - radius;
+  path.push(`M ${topStartX} ${y}`);
+  if (tailInfo && side === 'top') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstX = clamp(first.x, topStartX, topEndX);
+    const secondX = clamp(second.x, topStartX, topEndX);
+    if (firstX > topStartX) {
+      path.push(`H ${firstX}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${secondX} ${y}`);
+    if (secondX < topEndX) {
+      path.push(`H ${topEndX}`);
+    }
   } else {
-    baseCenter.x = clamp(tip.x, bubble.x + baseWidth * 0.3, bubble.x + bubble.width - baseWidth * 0.3);
-    const offset = baseWidth / 2;
-    p1 = { x: baseCenter.x - offset, y: baseCenter.y };
-    p2 = { x: baseCenter.x + offset, y: baseCenter.y };
+    path.push(`H ${topEndX}`);
   }
-  return `M ${p1.x} ${p1.y} Q ${tip.x} ${tip.y} ${p2.x} ${p2.y}`;
+  path.push(`Q ${x + width} ${y} ${x + width} ${y + radius}`);
+  const rightStartY = y + radius;
+  const rightEndY = y + height - radius;
+  if (tailInfo && side === 'right') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstY = clamp(first.y, rightStartY, rightEndY);
+    const secondY = clamp(second.y, rightStartY, rightEndY);
+    if (firstY > rightStartY) {
+      path.push(`V ${firstY}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${x + width} ${secondY}`);
+    if (secondY < rightEndY) {
+      path.push(`V ${rightEndY}`);
+    }
+  } else {
+    path.push(`V ${rightEndY}`);
+  }
+  path.push(`Q ${x + width} ${y + height} ${x + width - radius} ${y + height}`);
+  const bottomStartX = x + width - radius;
+  const bottomEndX = x + radius;
+  if (tailInfo && side === 'bottom') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstX = clamp(first.x, bottomEndX, bottomStartX);
+    const secondX = clamp(second.x, bottomEndX, bottomStartX);
+    if (firstX < bottomStartX) {
+      path.push(`H ${firstX}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${secondX} ${y + height}`);
+    if (secondX > bottomEndX) {
+      path.push(`H ${bottomEndX}`);
+    }
+  } else {
+    path.push(`H ${bottomEndX}`);
+  }
+  path.push(`Q ${x} ${y + height} ${x} ${y + height - radius}`);
+  const leftStartY = y + height - radius;
+  const leftEndY = y + radius;
+  if (tailInfo && side === 'left') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstY = clamp(first.y, leftEndY, leftStartY);
+    const secondY = clamp(second.y, leftEndY, leftStartY);
+    if (firstY < leftStartY) {
+      path.push(`V ${firstY}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${x} ${secondY}`);
+    if (secondY > leftEndY) {
+      path.push(`V ${leftEndY}`);
+    }
+  } else {
+    path.push(`V ${leftEndY}`);
+  }
+  path.push(`Q ${x} ${y} ${topStartX} ${y}`);
+  path.push('Z');
+  return path.join(' ');
+}
+
+function buildSpeechTailPath(bubble) {
+  const geometry = computeTailGeometry(bubble);
+  if (!geometry) return '';
+  const [start, end] = orderTailBasePoints(geometry.side, geometry.p1, geometry.p2);
+  return `M ${start.x} ${start.y} Q ${geometry.tip.x} ${geometry.tip.y} ${end.x} ${end.y}`;
+}
+
+function computeTailGeometry(bubble) {
+  if (!bubble.tail) return null;
+  const tip = getTailTip(bubble);
+  if (!tip) return null;
+  const baseCenter = getTailBase(bubble);
+  const dx = tip.x - baseCenter.x;
+  const dy = tip.y - baseCenter.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const halfAngle = (SPEECH_TAIL_ANGLE_DEGREES * Math.PI) / 180 / 2;
+  const halfWidth = Math.tan(halfAngle) * length;
+  const px = -dy / length;
+  const py = dx / length;
+  let p1 = { x: baseCenter.x + px * halfWidth, y: baseCenter.y + py * halfWidth };
+  let p2 = { x: baseCenter.x - px * halfWidth, y: baseCenter.y - py * halfWidth };
+  const side = resolveTailSide(bubble, baseCenter);
+  const { x, y, width, height } = bubble;
+  const radius = Math.min(width, height) * 0.45;
+  if (side === 'top' || side === 'bottom') {
+    const minX = x + radius;
+    const maxX = x + width - radius;
+    const baseY = side === 'top' ? y : y + height;
+    p1 = { x: clamp(p1.x, minX, maxX), y: baseY };
+    p2 = { x: clamp(p2.x, minX, maxX), y: baseY };
+  } else {
+    const minY = y + radius;
+    const maxY = y + height - radius;
+    const baseX = side === 'left' ? x : x + width;
+    p1 = { x: baseX, y: clamp(p1.y, minY, maxY) };
+    p2 = { x: baseX, y: clamp(p2.y, minY, maxY) };
+  }
+  return { tip, baseCenter, p1, p2, side };
+}
+
+function resolveTailSide(bubble, baseCenter) {
+  const { x, y, width, height } = bubble;
+  const epsilon = Math.min(width, height) * 0.05;
+  if (Math.abs(baseCenter.y - y) <= epsilon) return 'top';
+  if (Math.abs(baseCenter.y - (y + height)) <= epsilon) return 'bottom';
+  if (Math.abs(baseCenter.x - x) <= epsilon) return 'left';
+  return 'right';
+}
+
+function orderTailBasePoints(side, p1, p2) {
+  if (side === 'top') {
+    return p1.x <= p2.x ? [p1, p2] : [p2, p1];
+  }
+  if (side === 'right') {
+    return p1.y <= p2.y ? [p1, p2] : [p2, p1];
+  }
+  if (side === 'bottom') {
+    return p1.x >= p2.x ? [p1, p2] : [p2, p1];
+  }
+  return p1.y >= p2.y ? [p1, p2] : [p2, p1];
 }
 
 function getOverlayRect(bubble) {
@@ -1015,6 +1322,7 @@ function pushHistory() {
     bubbles: state.bubbles,
     selectedBubbleId: state.selectedBubbleId,
     viewport: state.viewport,
+    autoWrap: state.autoWrap,
   });
   state.history = state.history.slice(0, state.historyIndex + 1);
   state.history.push(snapshot);
@@ -1028,9 +1336,13 @@ function undo() {
   state.bubbles = snapshot.bubbles.map((bubble) => ({ ...bubble }));
   state.selectedBubbleId = snapshot.selectedBubbleId;
   state.viewport = { ...snapshot.viewport };
+  if (snapshot.autoWrap) {
+    state.autoWrap = { ...snapshot.autoWrap };
+  }
   updateSceneTransform();
   render();
   updateControlsFromSelection();
+  updateAutoWrapControls();
 }
 
 function clamp(value, min, max) {
@@ -1085,7 +1397,9 @@ function drawBubblesToContext(ctx, options = {}) {
     ctx.strokeStyle = '#11141b';
     ctx.fillStyle = '#ffffff';
     if (includeBodies) {
-      if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
+      if (bubble.type === 'speech') {
+        drawPath(ctx, createSpeechBubblePath(bubble));
+      } else if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
         drawPath(ctx, createRectanglePath(bubble));
       } else if (bubble.type.startsWith('thought')) {
         ctx.beginPath();
@@ -1104,7 +1418,7 @@ function drawBubblesToContext(ctx, options = {}) {
       } else {
         drawPath(ctx, createRoundedRectPath(bubble.x, bubble.y, bubble.width, bubble.height, Math.min(bubble.width, bubble.height) * 0.45));
       }
-      if (bubble.tail) {
+      if (bubble.tail && bubble.type !== 'speech') {
         if (bubble.type.startsWith('thought')) {
           drawThoughtTail(ctx, bubble);
         } else {
@@ -1118,7 +1432,8 @@ function drawBubblesToContext(ctx, options = {}) {
       ctx.font = `${bubble.bold ? 'bold ' : ''}${bubble.fontSize}px ${bubble.fontFamily}`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      const lines = bubble.text.split('\n');
+      const displayText = getBubbleDisplayText(bubble);
+      const lines = displayText ? displayText.split('\n') : [''];
       const lineHeight = bubble.fontSize * 1.2;
       const startY = textRect.y + textRect.height / 2 - ((lines.length - 1) * lineHeight) / 2;
       lines.forEach((line, index) => {
@@ -1277,7 +1592,8 @@ async function buildBubbleLayer() {
 }
 
 async function buildTextLayer(bubble) {
-  if (!bubble.text) return null;
+  const displayText = getBubbleDisplayText(bubble);
+  if (!displayText) return null;
   const textOnly = document.createElement('canvas');
   textOnly.width = state.canvas.width;
   textOnly.height = state.canvas.height;
@@ -1288,7 +1604,7 @@ async function buildTextLayer(bubble) {
   textCtx.font = `${bubble.bold ? 'bold ' : ''}${bubble.fontSize}px ${bubble.fontFamily}`;
   textCtx.textBaseline = 'middle';
   textCtx.textAlign = 'center';
-  const lines = bubble.text.split('\n');
+  const lines = displayText.split('\n');
   const lineHeight = bubble.fontSize * 1.2;
   const startY = textRect.y + textRect.height / 2 - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((line, index) => {
