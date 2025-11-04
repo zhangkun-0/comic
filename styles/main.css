@@ -84,6 +84,11 @@ textarea {
   transition: border 0.2s ease, box-shadow 0.2s ease;
 }
 
+input[type='range'] {
+  width: 100%;
+  accent-color: #ffce55;
+}
+
 select:focus,
 input:focus,
 textarea:focus {
@@ -164,6 +169,29 @@ button[data-active='true'] {
   gap: 12px;
 }
 
+.auto-wrap-controls {
+  gap: 12px;
+}
+
+.auto-wrap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  color: rgba(233, 237, 244, 0.85);
+}
+
+.auto-wrap-header button {
+  flex-shrink: 0;
+}
+
+.slider-value {
+  display: flex;
+  justify-content: flex-end;
+  font-size: 0.85rem;
+  color: rgba(233, 237, 244, 0.65);
+}
+
 .hint {
   margin-top: -4px;
   font-size: 0.8rem;
@@ -220,6 +248,8 @@ button[data-active='true'] {
   fill: #ffffff;
   stroke: #11141b;
   vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
 
 #bubble-layer .bubble-body {
