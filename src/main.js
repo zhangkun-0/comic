@@ -511,6 +511,18 @@ function movePanel(panel, deltaX, deltaY) {
 }
 
 function determinePanelGestureIntent(panel, worldPoint, event) {
+  const panels = getPanelState();
+  const pageFrame = panels.pageFrame;
+  const isRootPanel = !panel.parent;
+  const insidePageFrame =
+    pageFrame &&
+    worldPoint.x >= pageFrame.x &&
+    worldPoint.x <= pageFrame.x + pageFrame.width &&
+    worldPoint.y >= pageFrame.y &&
+    worldPoint.y <= pageFrame.y + pageFrame.height;
+  if (isRootPanel && insidePageFrame) {
+    return 'split';
+  }
   if (event.altKey || event.metaKey) {
     return 'move';
   }
@@ -522,6 +534,9 @@ function determinePanelGestureIntent(panel, worldPoint, event) {
     Math.abs(worldPoint.y - (rect.y + rect.height)),
   );
   if (distanceToEdge <= PANEL_EDGE_MOVE_MARGIN) {
+    return 'move';
+  }
+  if (isRootPanel) {
     return 'move';
   }
   return 'split';
