@@ -47,6 +47,10 @@
           <div id="placeholder" class="no-image-placeholder">请先导入漫画图片</div>
           <div id="scene">
             <img id="base-image" alt="" />
+            <div id="page-frame-layer">
+              <div id="page-frame"></div>
+            </div>
+            <div id="panel-layer"></div>
             <svg id="bubble-layer" xmlns="http://www.w3.org/2000/svg"></svg>
           </div>
           <div id="selection-overlay" class="hidden"></div>
@@ -84,6 +88,47 @@
           <label for="text-content">文字输入</label>
           <textarea id="text-content" rows="6" spellcheck="false"></textarea>
         </div>
+        <div class="section">
+          <h2>漫画分格</h2>
+          <label for="frame-margin-x">左右留白</label>
+          <input id="frame-margin-x" type="number" min="0" max="600" value="60" />
+          <label for="frame-margin-y">上下留白</label>
+          <input id="frame-margin-y" type="number" min="0" max="600" value="60" />
+          <label for="panel-stroke">漫画格框线条</label>
+          <input id="panel-stroke" type="number" min="1" max="20" value="4" />
+          <label for="panel-gap-x">横向间隙</label>
+          <input id="panel-gap-x" type="number" min="0" max="200" value="16" />
+          <label for="panel-gap-y">纵向间隙</label>
+          <input id="panel-gap-y" type="number" min="0" max="200" value="24" />
+          <label for="panel-background">格框外部颜色</label>
+          <select id="panel-background">
+            <option value="#ffffff">白色</option>
+            <option value="#000000">黑色</option>
+          </select>
+        </div>
+        <div class="section auto-wrap-controls">
+          <div class="auto-wrap-header">
+            <span>自动换行</span>
+            <button
+              id="toggle-auto-wrap"
+              class="secondary"
+              type="button"
+              data-enabled="true"
+            >关闭自动换行</button>
+          </div>
+          <label for="line-length">每行字数</label>
+          <input id="line-length" type="range" min="4" max="10" value="5" />
+          <div class="slider-value">
+            <span id="line-length-value">5</span> 字/行
+          </div>
+        </div>
+        <div class="section panel-image-controls">
+          <label for="panel-rotation">格框图片旋转</label>
+          <input id="panel-rotation" type="range" min="-180" max="180" value="0" />
+          <div class="slider-value">
+            <span id="panel-rotation-value">0</span>°
+          </div>
+        </div>
         <div class="section button-row">
           <button id="undo" class="secondary" type="button">撤销</button>
         </div>
@@ -102,6 +147,12 @@
     </div>
 
     <div id="measure-box"></div>
-    <script type="module" src="src/main.js"></script>
+    <input
+      id="hidden-panel-image-input"
+      class="visually-hidden-input"
+      type="file"
+      accept="image/*"
+    />
+    <script src="src/main.js"></script>
   </body>
 </html>

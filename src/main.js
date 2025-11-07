@@ -11,6 +11,9 @@ const elements = {
   scene: document.getElementById('scene'),
   bubbleLayer: document.getElementById('bubble-layer'),
   baseImage: document.getElementById('base-image'),
+  pageFrameLayer: document.getElementById('page-frame-layer'),
+  pageFrame: document.getElementById('page-frame'),
+  panelLayer: document.getElementById('panel-layer'),
   placeholder: document.getElementById('placeholder'),
   selectionOverlay: document.getElementById('selection-overlay'),
   inlineEditor: document.getElementById('inline-editor'),
@@ -20,15 +23,34 @@ const elements = {
   fontSize: document.getElementById('font-size'),
   toggleBold: document.getElementById('toggle-bold'),
   textContent: document.getElementById('text-content'),
+  autoWrapToggle: document.getElementById('toggle-auto-wrap'),
+  lineLength: document.getElementById('line-length'),
+  lineLengthValue: document.getElementById('line-length-value'),
+  frameMarginX: document.getElementById('frame-margin-x'),
+  frameMarginY: document.getElementById('frame-margin-y'),
+  panelStroke: document.getElementById('panel-stroke'),
+  panelGapX: document.getElementById('panel-gap-x'),
+  panelGapY: document.getElementById('panel-gap-y'),
+  panelBackground: document.getElementById('panel-background'),
+  panelRotation: document.getElementById('panel-rotation'),
+  panelRotationValue: document.getElementById('panel-rotation-value'),
   undo: document.getElementById('undo'),
   exportFormat: document.getElementById('export-format'),
   exportButton: document.getElementById('export'),
   measureBox: document.getElementById('measure-box'),
+  hiddenPanelImageInput: document.getElementById('hidden-panel-image-input'),
 };
 
 const HANDLE_DIRECTIONS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const CONTROL_PADDING = 28;
 const MIN_BODY_SIZE = 80;
+const SPEECH_TAIL_ANGLE_DEGREES = 8;
+const TRAILING_PUNCTUATION = new Set(['，', ',', '。', '.', '、', '！', '!', '？', '?', '；', ';', '：', ':']);
+const MIN_PANEL_SIZE = 80;
+const PANEL_SPLIT_DRAG_THRESHOLD = 16;
+const PANEL_MOVE_THRESHOLD = 6;
+const PANEL_GESTURE_DECISION_DISTANCE = 12;
+const PANEL_EDGE_MOVE_MARGIN = 28;
 
 const state = {
   canvas: { width: 1200, height: 1600 },
@@ -41,11 +63,819 @@ const state = {
   fontFamily: elements.fontFamily.value,
   fontSize: Number(elements.fontSize.value),
   bold: false,
+  autoWrap: {
+    enabled: true,
+    charactersPerLine: 5,
+  },
   history: [],
   historyIndex: -1,
   interaction: null,
   inlineEditingBubbleId: null,
+  panels: {
+    pageFrame: null,
+    root: null,
+    nextId: 1,
+    selectedId: null,
+    strokeWidth: 4,
+    gapX: 16,
+    gapY: 24,
+    marginX: 60,
+    marginY: 60,
+    outerColor: '#ffffff',
+    pendingImagePanelId: null,
+  },
 };
+
+function getBubbleRawText(bubble) {
+  if (typeof bubble.rawText !== 'string') {
+    bubble.rawText = typeof bubble.text === 'string' ? bubble.text : '';
+  }
+  return bubble.rawText;
+}
+
+function setBubbleRawText(bubble, value) {
+  bubble.rawText = value;
+}
+
+function getBubbleDisplayText(bubble) {
+  const raw = getBubbleRawText(bubble);
+  if (!raw) return '';
+  if (!state.autoWrap.enabled) {
+    return raw;
+  }
+  return applyAutoWrap(raw, state.autoWrap.charactersPerLine);
+}
+
+function updateBubbleText(bubble, rawText, options = {}) {
+  const normalized = (rawText ?? '').replace(/\r\n?/g, '\n');
+  setBubbleRawText(bubble, normalized);
+  if (options.autoFit !== false) {
+    autoFitBubbleToText(bubble, options.fitOptions || {});
+  }
+}
+
+function applyAutoWrap(text, lineLength) {
+  if (!text) return '';
+  const maxPerLine = clamp(Math.floor(lineLength) || 5, 1, 20);
+  const lines = [];
+  let current = '';
+  let count = 0;
+  const flush = () => {
+    lines.push(current);
+    current = '';
+    count = 0;
+  };
+  for (const char of text) {
+    if (char === '\n') {
+      flush();
+      continue;
+    }
+    if (TRAILING_PUNCTUATION.has(char)) {
+      if (!current) {
+        let attached = false;
+        for (let index = lines.length - 1; index >= 0; index -= 1) {
+          if (lines[index]) {
+            lines[index] += char;
+            attached = true;
+            break;
+          }
+        }
+        if (!attached) {
+          current += char;
+        }
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (count >= maxPerLine) {
+      flush();
+    }
+    current += char;
+    count += 1;
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.join('\n');
+}
+
+function rawIndexFromDisplay(text, displayIndex) {
+  let raw = 0;
+  for (let i = 0; i < displayIndex && i < text.length; i += 1) {
+    if (text[i] !== '\n') {
+      raw += 1;
+    }
+  }
+  return raw;
+}
+
+function displayIndexFromRaw(text, rawIndex) {
+  if (rawIndex <= 0) return 0;
+  let raw = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '\n') {
+      raw += 1;
+      if (raw === rawIndex) {
+        return i + 1;
+      }
+    }
+  }
+  return text.length;
+}
+
+function getPanelState() {
+  return state.panels;
+}
+
+function ensurePageFrame() {
+  const panels = getPanelState();
+  if (!state.canvas.width || !state.canvas.height) {
+    panels.pageFrame = null;
+    panels.root = null;
+    return;
+  }
+  const maxMarginX = Math.max(0, Math.floor(state.canvas.width / 2 - MIN_PANEL_SIZE));
+  const maxMarginY = Math.max(0, Math.floor(state.canvas.height / 2 - MIN_PANEL_SIZE));
+  panels.marginX = clamp(panels.marginX, 0, maxMarginX);
+  panels.marginY = clamp(panels.marginY, 0, maxMarginY);
+  const width = Math.max(MIN_PANEL_SIZE, state.canvas.width - panels.marginX * 2);
+  const height = Math.max(MIN_PANEL_SIZE, state.canvas.height - panels.marginY * 2);
+  panels.pageFrame = {
+    x: panels.marginX,
+    y: panels.marginY,
+    width,
+    height,
+  };
+  if (!panels.root) {
+    panels.root = createPanelLeaf();
+  }
+}
+
+function createPanelLeaf() {
+  return {
+    id: `panel-${state.panels.nextId++}`,
+    type: 'leaf',
+    parent: null,
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    image: null,
+  };
+}
+
+function collectPanelLeaves(node, result = []) {
+  if (!node) return result;
+  if (node.type === 'leaf') {
+    result.push(node);
+    return result;
+  }
+  node.children.forEach((child) => collectPanelLeaves(child, result));
+  return result;
+}
+
+function findPanelById(node, id) {
+  if (!node) return null;
+  if (node.type === 'leaf') {
+    return node.id === id ? node : null;
+  }
+  for (const child of node.children) {
+    const found = findPanelById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function layoutPanelTree() {
+  const panels = getPanelState();
+  if (!panels.pageFrame || !panels.root) return;
+  layoutPanelNode(panels.root, panels.pageFrame);
+}
+
+function layoutPanelNode(node, bounds) {
+  const panels = getPanelState();
+  node.rect = { ...bounds };
+  if (node.type === 'leaf') {
+    return;
+  }
+  const gapX = Math.max(0, panels.gapX);
+  const gapY = Math.max(0, panels.gapY);
+  if (node.orientation === 'vertical') {
+    const usable = Math.max(0, bounds.width - gapX);
+    let ratio = clamp(node.ratio ?? 0.5, 0.05, 0.95);
+    let widthA = usable * ratio;
+    let widthB = usable - widthA;
+    if (widthA < MIN_PANEL_SIZE) {
+      widthA = MIN_PANEL_SIZE;
+      widthB = Math.max(MIN_PANEL_SIZE, usable - widthA);
+      ratio = usable > 0 ? widthA / usable : 0.5;
+    }
+    if (widthB < MIN_PANEL_SIZE) {
+      widthB = MIN_PANEL_SIZE;
+      widthA = Math.max(MIN_PANEL_SIZE, usable - widthB);
+      ratio = usable > 0 ? widthA / usable : 0.5;
+    }
+    node.ratio = ratio;
+    const childA = node.children[0];
+    const childB = node.children[1];
+    const boundsA = {
+      x: bounds.x,
+      y: bounds.y,
+      width: widthA,
+      height: bounds.height,
+    };
+    const boundsB = {
+      x: bounds.x + widthA + gapX,
+      y: bounds.y,
+      width: Math.max(0, bounds.width - widthA - gapX),
+      height: bounds.height,
+    };
+    layoutPanelNode(childA, boundsA);
+    layoutPanelNode(childB, boundsB);
+    return;
+  }
+  const usable = Math.max(0, bounds.height - gapY);
+  let ratio = clamp(node.ratio ?? 0.5, 0.05, 0.95);
+  let heightA = usable * ratio;
+  let heightB = usable - heightA;
+  if (heightA < MIN_PANEL_SIZE) {
+    heightA = MIN_PANEL_SIZE;
+    heightB = Math.max(MIN_PANEL_SIZE, usable - heightA);
+    ratio = usable > 0 ? heightA / usable : 0.5;
+  }
+  if (heightB < MIN_PANEL_SIZE) {
+    heightB = MIN_PANEL_SIZE;
+    heightA = Math.max(MIN_PANEL_SIZE, usable - heightB);
+    ratio = usable > 0 ? heightA / usable : 0.5;
+  }
+  node.ratio = ratio;
+  const childA = node.children[0];
+  const childB = node.children[1];
+  const boundsA = {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: heightA,
+  };
+  const boundsB = {
+    x: bounds.x,
+    y: bounds.y + heightA + gapY,
+    width: bounds.width,
+    height: Math.max(0, bounds.height - heightA - gapY),
+  };
+  layoutPanelNode(childA, boundsA);
+  layoutPanelNode(childB, boundsB);
+}
+
+function getSelectedPanel() {
+  const panels = getPanelState();
+  if (!panels.selectedId) return null;
+  return findPanelById(panels.root, panels.selectedId);
+}
+
+function setSelectedPanel(id) {
+  const panels = getPanelState();
+  if (panels.selectedId === id) {
+    updatePanelRotationControl();
+    updatePanelOverlay();
+    return;
+  }
+  if (id) {
+    setSelectedBubble(null);
+  }
+  panels.selectedId = id;
+  updatePanelRotationControl();
+  render();
+}
+
+function getPanelHandlePosition(rect, direction) {
+  const centerX = rect.x + rect.width / 2;
+  const centerY = rect.y + rect.height / 2;
+  const positions = {
+    n: { x: centerX, y: rect.y },
+    s: { x: centerX, y: rect.y + rect.height },
+    e: { x: rect.x + rect.width, y: centerY },
+    w: { x: rect.x, y: centerY },
+    nw: { x: rect.x, y: rect.y },
+    ne: { x: rect.x + rect.width, y: rect.y },
+    se: { x: rect.x + rect.width, y: rect.y + rect.height },
+    sw: { x: rect.x, y: rect.y + rect.height },
+  };
+  return positions[direction];
+}
+
+function updatePanelOverlay() {
+  if (!panelOverlay.container) return;
+  const panel = getSelectedPanel();
+  if (!panel) {
+    panelOverlay.container.classList.add('hidden');
+    if (!state.selectedBubbleId) {
+      elements.positionIndicator.textContent = '';
+    }
+    return;
+  }
+  panelOverlay.container.classList.remove('hidden');
+  const rect = panel.rect;
+  const topLeft = worldToScreen({ x: rect.x, y: rect.y });
+  const bottomRight = worldToScreen({ x: rect.x + rect.width, y: rect.y + rect.height });
+  panelOverlay.box.style.left = `${topLeft.x}px`;
+  panelOverlay.box.style.top = `${topLeft.y}px`;
+  panelOverlay.box.style.width = `${Math.max(0, bottomRight.x - topLeft.x)}px`;
+  panelOverlay.box.style.height = `${Math.max(0, bottomRight.y - topLeft.y)}px`;
+  elements.positionIndicator.textContent = `格框：(${rect.x.toFixed(0)}, ${rect.y.toFixed(0)}) 尺寸：${rect.width.toFixed(0)}×${rect.height.toFixed(0)}`;
+  HANDLE_DIRECTIONS.forEach((dir) => {
+    const handle = panelOverlay.handles.get(dir);
+    if (!handle) return;
+    const pos = getPanelHandlePosition(rect, dir);
+    const screen = worldToScreen(pos);
+    handle.style.left = `${screen.x}px`;
+    handle.style.top = `${screen.y}px`;
+  });
+}
+
+function getPanelBoundaryController(panel, side) {
+  let current = panel;
+  while (current && current.parent) {
+    const parent = current.parent;
+    const index = parent.children.indexOf(current);
+    if (side === 'left' && parent.orientation === 'vertical' && index === 1) {
+      return { node: parent, orientation: 'vertical', index, side };
+    }
+    if (side === 'right' && parent.orientation === 'vertical' && index === 0) {
+      return { node: parent, orientation: 'vertical', index, side };
+    }
+    if (side === 'top' && parent.orientation === 'horizontal' && index === 1) {
+      return { node: parent, orientation: 'horizontal', index, side };
+    }
+    if (side === 'bottom' && parent.orientation === 'horizontal' && index === 0) {
+      return { node: parent, orientation: 'horizontal', index, side };
+    }
+    current = parent;
+  }
+  return null;
+}
+
+function setPanelBoundaryPosition(controller, newPosition) {
+  if (!controller) return;
+  const { node, orientation, side } = controller;
+  const panels = getPanelState();
+  const gap = orientation === 'vertical' ? panels.gapX : panels.gapY;
+  const rect = node.rect;
+  const total = orientation === 'vertical' ? rect.width - gap : rect.height - gap;
+  if (total <= 0) return;
+  const minRatio = Math.min(0.5, MIN_PANEL_SIZE / Math.max(total, 1));
+  if (orientation === 'vertical') {
+    if (side === 'right') {
+      const width = clamp(newPosition - rect.x, MIN_PANEL_SIZE, total - MIN_PANEL_SIZE);
+      node.ratio = clamp(width / total, minRatio, 1 - minRatio);
+    } else if (side === 'left') {
+      const rightEdge = rect.x + rect.width;
+      const rightWidth = clamp(rightEdge - gap - newPosition, MIN_PANEL_SIZE, total - MIN_PANEL_SIZE);
+      const leftWidth = total - rightWidth;
+      node.ratio = clamp(leftWidth / total, minRatio, 1 - minRatio);
+    }
+  } else {
+    if (side === 'bottom') {
+      const height = clamp(newPosition - rect.y, MIN_PANEL_SIZE, total - MIN_PANEL_SIZE);
+      node.ratio = clamp(height / total, minRatio, 1 - minRatio);
+    } else if (side === 'top') {
+      const bottomEdge = rect.y + rect.height;
+      const bottomHeight = clamp(bottomEdge - gap - newPosition, MIN_PANEL_SIZE, total - MIN_PANEL_SIZE);
+      const topHeight = total - bottomHeight;
+      node.ratio = clamp(topHeight / total, minRatio, 1 - minRatio);
+    }
+  }
+}
+
+function splitPanel(panel, orientation, splitPoint) {
+  const panels = getPanelState();
+  const usableWidth = panel.rect.width - panels.gapX;
+  const usableHeight = panel.rect.height - panels.gapY;
+  if (orientation === 'vertical' && usableWidth < MIN_PANEL_SIZE * 2) return false;
+  if (orientation === 'horizontal' && usableHeight < MIN_PANEL_SIZE * 2) return false;
+  const parent = panel.parent;
+  const splitNode = {
+    type: 'split',
+    orientation,
+    ratio: 0.5,
+    children: [],
+    parent,
+    rect: { ...panel.rect },
+  };
+  const first = panel;
+  const second = createPanelLeaf();
+  first.parent = splitNode;
+  second.parent = splitNode;
+  if (orientation === 'vertical') {
+    const usable = Math.max(1, panel.rect.width - panels.gapX);
+    const local = clamp(splitPoint.x - panel.rect.x, MIN_PANEL_SIZE, panel.rect.width - MIN_PANEL_SIZE);
+    const ratio = clamp((local - panels.gapX / 2) / usable, MIN_PANEL_SIZE / usable, 1 - MIN_PANEL_SIZE / usable);
+    splitNode.ratio = ratio;
+    splitNode.children = [first, second];
+  } else {
+    const usable = Math.max(1, panel.rect.height - panels.gapY);
+    const local = clamp(splitPoint.y - panel.rect.y, MIN_PANEL_SIZE, panel.rect.height - MIN_PANEL_SIZE);
+    const ratio = clamp((local - panels.gapY / 2) / usable, MIN_PANEL_SIZE / usable, 1 - MIN_PANEL_SIZE / usable);
+    splitNode.ratio = ratio;
+    splitNode.children = [first, second];
+  }
+  if (parent) {
+    const index = parent.children.indexOf(panel);
+    parent.children[index] = splitNode;
+  } else {
+    panels.root = splitNode;
+  }
+  second.image = null;
+  layoutPanelTree();
+  setSelectedPanel(first.id);
+  return true;
+}
+
+function movePanel(panel, deltaX, deltaY) {
+  const originalRect = { ...panel.rect };
+  const leftController = getPanelBoundaryController(panel, 'left');
+  const rightController = getPanelBoundaryController(panel, 'right');
+  const topController = getPanelBoundaryController(panel, 'top');
+  const bottomController = getPanelBoundaryController(panel, 'bottom');
+  const nextLeft = originalRect.x + deltaX;
+  const nextRight = originalRect.x + originalRect.width + deltaX;
+  const nextTop = originalRect.y + deltaY;
+  const nextBottom = originalRect.y + originalRect.height + deltaY;
+  if (leftController && rightController) {
+    setPanelBoundaryPosition(leftController, nextLeft);
+    setPanelBoundaryPosition(rightController, nextRight);
+  }
+  if (topController && bottomController) {
+    setPanelBoundaryPosition(topController, nextTop);
+    setPanelBoundaryPosition(bottomController, nextBottom);
+  }
+  layoutPanelTree();
+}
+
+function determinePanelGestureIntent(panel, worldPoint, event) {
+  if (event.altKey || event.metaKey) {
+    return 'move';
+  }
+  const rect = panel.rect;
+  const distanceToEdge = Math.min(
+    Math.abs(worldPoint.x - rect.x),
+    Math.abs(worldPoint.x - (rect.x + rect.width)),
+    Math.abs(worldPoint.y - rect.y),
+    Math.abs(worldPoint.y - (rect.y + rect.height)),
+  );
+  if (distanceToEdge <= PANEL_EDGE_MOVE_MARGIN) {
+    return 'move';
+  }
+  return 'split';
+}
+
+function handlePanelPointerDown(event) {
+  const panelElement = event.target.closest('.panel');
+  if (!panelElement) {
+    if (event.button === 0) {
+      setSelectedPanel(null);
+    }
+    return;
+  }
+  const panelId = panelElement.dataset.panelId;
+  const panel = findPanelById(state.panels.root, panelId);
+  if (!panel) return;
+  setSelectedPanel(panel.id);
+  const worldPoint = screenToWorld({ x: event.clientX, y: event.clientY });
+  if (event.button === 2) {
+    if (panel.image && panel.image.src) {
+      event.preventDefault();
+      state.interaction = {
+        type: 'panel-image-pan',
+        pointerId: event.pointerId,
+        panelId: panel.id,
+        startX: event.clientX,
+        startY: event.clientY,
+        imageStart: {
+          offsetX: panel.image.offsetX || 0,
+          offsetY: panel.image.offsetY || 0,
+        },
+      };
+      try {
+        elements.viewport.setPointerCapture(event.pointerId);
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    return;
+  }
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const intent = determinePanelGestureIntent(panel, worldPoint, event);
+  state.interaction = {
+    type: 'panel-gesture',
+    pointerId: event.pointerId,
+    panelId: panel.id,
+    startX: event.clientX,
+    startY: event.clientY,
+    startPoint: worldPoint,
+    intent,
+  };
+  try {
+    elements.viewport.setPointerCapture(event.pointerId);
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+function handlePanelContextMenu(event) {
+  if (event.target.closest('.panel')) {
+    event.preventDefault();
+  }
+}
+
+function handlePanelDoubleClick(event) {
+  const panelElement = event.target.closest('.panel');
+  if (!panelElement) return;
+  event.preventDefault();
+  const panelId = panelElement.dataset.panelId;
+  const panel = findPanelById(state.panels.root, panelId);
+  if (!panel) return;
+  setSelectedPanel(panel.id);
+  state.panels.pendingImagePanelId = panel.id;
+  const input = elements.hiddenPanelImageInput;
+  if (!input) return;
+  input.value = '';
+  if (typeof input.showPicker === 'function') {
+    try {
+      input.showPicker();
+      return;
+    } catch (error) {
+      // ignore and fallback
+    }
+  }
+  input.click();
+}
+
+function startPanelOverlayMove(event) {
+  if (event.button !== 0) return;
+  const panel = getSelectedPanel();
+  if (!panel) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.interaction = {
+    type: 'panel-move',
+    pointerId: event.pointerId,
+    panelId: panel.id,
+    startX: event.clientX,
+    startY: event.clientY,
+    appliedX: 0,
+    appliedY: 0,
+  };
+  try {
+    elements.viewport.setPointerCapture(event.pointerId);
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+function handlePanelWheel(event) {
+  const panelElement = event.target.closest('.panel');
+  if (!panelElement) return;
+  const panelId = panelElement.dataset.panelId;
+  const panel = findPanelById(state.panels.root, panelId);
+  if (!panel || !panel.image) return;
+  event.preventDefault();
+  const scale = panel.image.scale ?? 1;
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  const newScale = clamp(scale * factor, 0.1, 10);
+  panel.image.scale = newScale;
+  renderPanels();
+  updatePanelOverlay();
+  scheduleHistoryCommit();
+}
+
+function handlePanelImageSelection(event) {
+  const [file] = event.target.files;
+  event.target.value = '';
+  const panelId = state.panels.pendingImagePanelId;
+  state.panels.pendingImagePanelId = null;
+  if (!file || !panelId) return;
+  readFileAsDataURL(file)
+    .then((dataUrl) => loadPanelImage(panelId, dataUrl))
+    .catch((error) => {
+      console.error('加载格框图片失败', error);
+    });
+}
+
+function loadPanelImage(panelId, dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const panel = findPanelById(state.panels.root, panelId);
+      if (panel) {
+        panel.image = {
+          src: dataUrl,
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+          scale: Math.min(panel.rect.width / img.naturalWidth, panel.rect.height / img.naturalHeight) || 1,
+          rotation: 0,
+          offsetX: 0,
+          offsetY: 0,
+        };
+        setSelectedPanel(panel.id);
+        scheduleHistoryCommit();
+      }
+      resolve();
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+function updatePanelRotationControl() {
+  const panel = getSelectedPanel();
+  if (!panel || !panel.image) {
+    elements.panelRotation.value = '0';
+    elements.panelRotation.disabled = true;
+    elements.panelRotationValue.textContent = '0';
+    return;
+  }
+  const rotation = panel.image.rotation ?? 0;
+  elements.panelRotation.disabled = false;
+  elements.panelRotation.value = `${rotation}`;
+  elements.panelRotationValue.textContent = `${Math.round(rotation)}`;
+}
+
+function handlePanelRotationInput() {
+  const panel = getSelectedPanel();
+  if (!panel || !panel.image) return;
+  const value = clamp(Number(elements.panelRotation.value) || 0, -180, 180);
+  panel.image.rotation = value;
+  elements.panelRotationValue.textContent = `${Math.round(value)}`;
+  renderPanels();
+  updatePanelOverlay();
+  scheduleHistoryCommit();
+}
+
+function handlePanelMarginInput() {
+  const panels = getPanelState();
+  const marginX = clamp(Number(elements.frameMarginX.value) || panels.marginX, 0, state.canvas.width / 2);
+  const marginY = clamp(Number(elements.frameMarginY.value) || panels.marginY, 0, state.canvas.height / 2);
+  panels.marginX = marginX;
+  panels.marginY = marginY;
+  elements.frameMarginX.value = `${marginX}`;
+  elements.frameMarginY.value = `${marginY}`;
+  ensurePageFrame();
+  layoutPanelTree();
+  render();
+  scheduleHistoryCommit();
+}
+
+function handlePanelStrokeInput() {
+  const panels = getPanelState();
+  const stroke = clamp(Number(elements.panelStroke.value) || panels.strokeWidth, 1, 60);
+  panels.strokeWidth = stroke;
+  elements.panelStroke.value = `${stroke}`;
+  renderPanels();
+  scheduleHistoryCommit();
+}
+
+function handlePanelGapInput() {
+  const panels = getPanelState();
+  panels.gapX = clamp(Number(elements.panelGapX.value) || panels.gapX, 0, 400);
+  panels.gapY = clamp(Number(elements.panelGapY.value) || panels.gapY, 0, 400);
+  elements.panelGapX.value = `${panels.gapX}`;
+  elements.panelGapY.value = `${panels.gapY}`;
+  layoutPanelTree();
+  render();
+  scheduleHistoryCommit();
+}
+
+function handlePanelBackgroundInput() {
+  const panels = getPanelState();
+  panels.outerColor = elements.panelBackground.value;
+  renderPanels();
+  scheduleHistoryCommit();
+}
+
+function startPanelResize(event, direction) {
+  event.preventDefault();
+  event.stopPropagation();
+  const panel = getSelectedPanel();
+  if (!panel) return;
+  const controllers = {
+    left: direction.includes('w') ? getPanelBoundaryController(panel, 'left') : null,
+    right: direction.includes('e') ? getPanelBoundaryController(panel, 'right') : null,
+    top: direction.includes('n') ? getPanelBoundaryController(panel, 'top') : null,
+    bottom: direction.includes('s') ? getPanelBoundaryController(panel, 'bottom') : null,
+  };
+  state.interaction = {
+    type: 'panel-resize',
+    pointerId: event.pointerId,
+    panelId: panel.id,
+    direction,
+    startX: event.clientX,
+    startY: event.clientY,
+    startRect: { ...panel.rect },
+    controllers,
+  };
+  try {
+    elements.viewport.setPointerCapture(event.pointerId);
+  } catch (error) {
+    /* ignore */
+  }
+}
+
+function serializePanelNode(node) {
+  if (!node) return null;
+  if (node.type === 'leaf') {
+    return {
+      type: 'leaf',
+      id: node.id,
+      image: node.image
+        ? {
+            ...node.image,
+          }
+        : null,
+    };
+  }
+  return {
+    type: 'split',
+    orientation: node.orientation,
+    ratio: node.ratio,
+    children: node.children.map((child) => serializePanelNode(child)),
+  };
+}
+
+function restorePanelNode(data, parent = null) {
+  if (!data) return null;
+  if (data.type === 'leaf') {
+    return {
+      id: data.id,
+      type: 'leaf',
+      parent,
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      image: data.image
+        ? {
+            ...data.image,
+          }
+        : null,
+    };
+  }
+  const node = {
+    type: 'split',
+    orientation: data.orientation,
+    ratio: data.ratio,
+    parent,
+    children: [],
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+  };
+  node.children = data.children.map((child) => restorePanelNode(child, node));
+  return node;
+}
+
+function serializePanels() {
+  const panels = getPanelState();
+  return {
+    nextId: panels.nextId,
+    selectedId: panels.selectedId,
+    strokeWidth: panels.strokeWidth,
+    gapX: panels.gapX,
+    gapY: panels.gapY,
+    marginX: panels.marginX,
+    marginY: panels.marginY,
+    outerColor: panels.outerColor,
+    root: serializePanelNode(panels.root),
+  };
+}
+
+function restorePanels(snapshot) {
+  const panels = getPanelState();
+  if (!snapshot) {
+    panels.pageFrame = null;
+    panels.root = null;
+    panels.selectedId = null;
+    panelElements.clear();
+    renderPanels();
+    updatePanelOverlay();
+    updatePanelRotationControl();
+    return;
+  }
+  panels.nextId = snapshot.nextId;
+  panels.selectedId = snapshot.selectedId;
+  panels.strokeWidth = snapshot.strokeWidth;
+  panels.gapX = snapshot.gapX;
+  panels.gapY = snapshot.gapY;
+  panels.marginX = snapshot.marginX;
+  panels.marginY = snapshot.marginY;
+  panels.outerColor = snapshot.outerColor;
+  panels.root = restorePanelNode(snapshot.root);
+  ensurePageFrame();
+  layoutPanelTree();
+  renderPanels();
+  updatePanelOverlay();
+  updatePanelRotationControl();
+  elements.frameMarginX.value = `${panels.marginX}`;
+  elements.frameMarginY.value = `${panels.marginY}`;
+  elements.panelStroke.value = `${panels.strokeWidth}`;
+  elements.panelGapX.value = `${panels.gapX}`;
+  elements.panelGapY.value = `${panels.gapY}`;
+  elements.panelBackground.value = panels.outerColor;
+}
 
 const overlay = {
   box: null,
@@ -53,11 +883,22 @@ const overlay = {
   tailHandle: null,
 };
 
+const panelOverlay = {
+  container: null,
+  box: null,
+  handles: new Map(),
+};
+
+const panelElements = new Map();
+
 let imagePickerInFlight = false;
 
 function init() {
   setupSelectionOverlay();
+  setupPanelOverlay();
   attachEvents();
+  updateAutoWrapControls();
+  updatePanelRotationControl();
   updateSceneSize(state.canvas.width, state.canvas.height);
   fitViewport();
   updateSceneTransform();
@@ -85,6 +926,25 @@ function setupSelectionOverlay() {
   elements.selectionOverlay.appendChild(overlay.tailHandle);
 }
 
+function setupPanelOverlay() {
+  panelOverlay.container = document.createElement('div');
+  panelOverlay.container.id = 'panel-selection-overlay';
+  panelOverlay.box = document.createElement('div');
+  panelOverlay.box.className = 'selection-box';
+  panelOverlay.box.addEventListener('pointerdown', startPanelOverlayMove);
+  panelOverlay.container.appendChild(panelOverlay.box);
+  HANDLE_DIRECTIONS.forEach((dir) => {
+    const handle = document.createElement('div');
+    handle.className = 'handle';
+    handle.dataset.direction = dir;
+    handle.addEventListener('pointerdown', (event) => startPanelResize(event, dir));
+    panelOverlay.container.appendChild(handle);
+    panelOverlay.handles.set(dir, handle);
+  });
+  panelOverlay.container.classList.add('hidden');
+  elements.viewport.appendChild(panelOverlay.container);
+}
+
 function attachEvents() {
   elements.importButton.addEventListener('click', handleImportButtonClick);
   elements.hiddenImageInput.addEventListener('change', handleImageSelection);
@@ -95,6 +955,15 @@ function attachEvents() {
   elements.fontSize.addEventListener('change', handleFontSizeChange);
   elements.toggleBold.addEventListener('click', toggleBold);
   elements.textContent.addEventListener('input', handleTextInput);
+  elements.autoWrapToggle.addEventListener('click', toggleAutoWrap);
+  elements.lineLength.addEventListener('input', handleLineLengthInput);
+  elements.frameMarginX.addEventListener('change', handlePanelMarginInput);
+  elements.frameMarginY.addEventListener('change', handlePanelMarginInput);
+  elements.panelStroke.addEventListener('change', handlePanelStrokeInput);
+  elements.panelGapX.addEventListener('change', handlePanelGapInput);
+  elements.panelGapY.addEventListener('change', handlePanelGapInput);
+  elements.panelBackground.addEventListener('change', handlePanelBackgroundInput);
+  elements.panelRotation.addEventListener('input', handlePanelRotationInput);
   elements.undo.addEventListener('click', undo);
   elements.exportButton.addEventListener('click', exportArtwork);
 
@@ -106,6 +975,13 @@ function attachEvents() {
 
   elements.bubbleLayer.addEventListener('pointerdown', handleBubblePointerDown);
   elements.bubbleLayer.addEventListener('dblclick', handleBubbleDoubleClick);
+
+  elements.panelLayer.addEventListener('pointerdown', handlePanelPointerDown);
+  elements.panelLayer.addEventListener('dblclick', handlePanelDoubleClick);
+  elements.panelLayer.addEventListener('contextmenu', handlePanelContextMenu);
+  elements.panelLayer.addEventListener('wheel', handlePanelWheel, { passive: false });
+
+  elements.hiddenPanelImageInput.addEventListener('change', handlePanelImageSelection);
 
   document.addEventListener('keydown', handleKeyDown);
 }
@@ -195,6 +1071,8 @@ function loadImage(dataUrl) {
     updateSceneSize(img.naturalWidth, img.naturalHeight);
     fitViewport();
     elements.placeholder.style.display = 'none';
+    ensurePageFrame();
+    layoutPanelTree();
     pushHistory();
     render();
   };
@@ -209,6 +1087,10 @@ function updateSceneSize(width, height) {
   elements.bubbleLayer.setAttribute('width', width);
   elements.bubbleLayer.setAttribute('height', height);
   elements.bubbleLayer.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  elements.pageFrameLayer.style.width = `${width}px`;
+  elements.pageFrameLayer.style.height = `${height}px`;
+  elements.panelLayer.style.width = `${width}px`;
+  elements.panelLayer.style.height = `${height}px`;
 }
 
 function fitViewport() {
@@ -239,6 +1121,14 @@ function worldToScreen(point) {
   };
 }
 
+function screenToWorld(point) {
+  const { zoom, offsetX, offsetY } = state.viewport;
+  return {
+    x: (point.x - offsetX) / zoom,
+    y: (point.y - offsetY) / zoom,
+  };
+}
+
 function screenDeltaToWorld(deltaX, deltaY) {
   const { zoom } = state.viewport;
   return {
@@ -264,12 +1154,13 @@ function insertBubble(type) {
     y,
     width,
     height,
-    padding: Math.max(28, Math.min(width, height) * 0.12),
+    padding: Math.max(36, Math.min(width, height) * 0.18),
     strokeWidth: Number(elements.strokeWidth.value) || state.defaultStrokeWidth,
     fontFamily: state.fontFamily,
     fontSize: state.fontSize,
     bold: state.bold,
     text: '',
+    rawText: '',
     tail: createDefaultTail(type, x, y, width, height),
   };
   state.bubbles.push(bubble);
@@ -305,6 +1196,11 @@ function createDefaultTail(type, x, y, width, height) {
 function setSelectedBubble(id) {
   if (state.inlineEditingBubbleId && state.inlineEditingBubbleId !== id) {
     elements.inlineEditor.blur();
+  }
+  if (id) {
+    state.panels.selectedId = null;
+    updatePanelRotationControl();
+    updatePanelOverlay();
   }
   state.selectedBubbleId = id;
   updateControlsFromSelection();
@@ -372,12 +1268,61 @@ function toggleBold() {
   }
 }
 
+function updateAutoWrapControls() {
+  if (elements.autoWrapToggle) {
+    elements.autoWrapToggle.dataset.enabled = state.autoWrap.enabled ? 'true' : 'false';
+    elements.autoWrapToggle.textContent = state.autoWrap.enabled ? '关闭自动换行' : '开启自动换行';
+  }
+  if (elements.lineLength) {
+    elements.lineLength.disabled = !state.autoWrap.enabled;
+    elements.lineLength.value = String(state.autoWrap.charactersPerLine);
+  }
+  if (elements.lineLengthValue) {
+    elements.lineLengthValue.textContent = String(state.autoWrap.charactersPerLine);
+  }
+}
+
+function refitAllBubblesToText() {
+  state.bubbles.forEach((bubble) => {
+    autoFitBubbleToText(bubble);
+  });
+  render();
+  if (state.inlineEditingBubbleId) {
+    const editing = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
+    if (editing) {
+      openInlineEditor(editing);
+    }
+  }
+}
+
+function toggleAutoWrap() {
+  state.autoWrap.enabled = !state.autoWrap.enabled;
+  updateAutoWrapControls();
+  refitAllBubblesToText();
+  updateControlsFromSelection();
+  pushHistory();
+}
+
+function handleLineLengthInput() {
+  const value = clamp(Number(elements.lineLength.value) || state.autoWrap.charactersPerLine, 4, 10);
+  state.autoWrap.charactersPerLine = value;
+  updateAutoWrapControls();
+  if (state.autoWrap.enabled) {
+    refitAllBubblesToText();
+  } else {
+    render();
+  }
+  scheduleHistoryCommit();
+}
+
 function handleTextInput() {
   const bubble = getSelectedBubble();
   if (!bubble) return;
-  bubble.text = elements.textContent.value;
-  autoFitBubbleToText(bubble);
+  updateBubbleText(bubble, elements.textContent.value);
   render();
+  if (state.inlineEditingBubbleId === bubble.id) {
+    openInlineEditor(bubble);
+  }
   scheduleHistoryCommit();
 }
 
@@ -538,6 +1483,98 @@ function handlePointerMove(event) {
     };
     setTailTip(bubble, newTip.x, newTip.y);
     render();
+  } else if (state.interaction.type === 'panel-gesture') {
+    const delta = screenDeltaToWorld(
+      event.clientX - state.interaction.startX,
+      event.clientY - state.interaction.startY,
+    );
+    const distance = Math.hypot(delta.x, delta.y);
+    if (distance >= PANEL_GESTURE_DECISION_DISTANCE) {
+      const intent = state.interaction.intent;
+      if (intent === 'move') {
+        state.interaction = {
+          type: 'panel-move',
+          pointerId: event.pointerId,
+          panelId: state.interaction.panelId,
+          startX: event.clientX,
+          startY: event.clientY,
+          appliedX: 0,
+          appliedY: 0,
+        };
+        handlePointerMove(event);
+        return;
+      }
+      state.interaction = {
+        type: 'panel-split',
+        pointerId: event.pointerId,
+        panelId: state.interaction.panelId,
+        startX: state.interaction.startX,
+        startY: state.interaction.startY,
+        startPoint: state.interaction.startPoint,
+        orientation: null,
+      };
+    }
+  } else if (state.interaction.type === 'panel-move') {
+    const panel = findPanelById(state.panels.root, state.interaction.panelId);
+    if (!panel) return;
+    const delta = screenDeltaToWorld(
+      event.clientX - state.interaction.startX,
+      event.clientY - state.interaction.startY,
+    );
+    const moveX = delta.x - (state.interaction.appliedX || 0);
+    const moveY = delta.y - (state.interaction.appliedY || 0);
+    if (Math.abs(moveX) > 0 || Math.abs(moveY) > 0) {
+      movePanel(panel, moveX, moveY);
+      state.interaction.appliedX = (state.interaction.appliedX || 0) + moveX;
+      state.interaction.appliedY = (state.interaction.appliedY || 0) + moveY;
+      renderPanels();
+      updatePanelOverlay();
+    }
+  } else if (state.interaction.type === 'panel-resize') {
+    const panel = findPanelById(state.panels.root, state.interaction.panelId);
+    if (!panel) return;
+    const delta = screenDeltaToWorld(
+      event.clientX - state.interaction.startX,
+      event.clientY - state.interaction.startY,
+    );
+    const startRect = state.interaction.startRect;
+    const { controllers } = state.interaction;
+    if (controllers.left) {
+      setPanelBoundaryPosition(controllers.left, startRect.x + delta.x);
+    }
+    if (controllers.right) {
+      setPanelBoundaryPosition(controllers.right, startRect.x + startRect.width + delta.x);
+    }
+    if (controllers.top) {
+      setPanelBoundaryPosition(controllers.top, startRect.y + delta.y);
+    }
+    if (controllers.bottom) {
+      setPanelBoundaryPosition(controllers.bottom, startRect.y + startRect.height + delta.y);
+    }
+    layoutPanelTree();
+    renderPanels();
+    updatePanelOverlay();
+  } else if (state.interaction.type === 'panel-image-pan') {
+    const panel = findPanelById(state.panels.root, state.interaction.panelId);
+    if (!panel || !panel.image) return;
+    const delta = screenDeltaToWorld(
+      event.clientX - state.interaction.startX,
+      event.clientY - state.interaction.startY,
+    );
+    panel.image.offsetX = (state.interaction.imageStart.offsetX || 0) + delta.x;
+    panel.image.offsetY = (state.interaction.imageStart.offsetY || 0) + delta.y;
+    renderPanels();
+  } else if (state.interaction.type === 'panel-split') {
+    if (!state.interaction.orientation) {
+      const dx = event.clientX - state.interaction.startX;
+      const dy = event.clientY - state.interaction.startY;
+      if (
+        Math.abs(dx) > PANEL_SPLIT_DRAG_THRESHOLD ||
+        Math.abs(dy) > PANEL_SPLIT_DRAG_THRESHOLD
+      ) {
+        state.interaction.orientation = Math.abs(dx) >= Math.abs(dy) ? 'vertical' : 'horizontal';
+      }
+    }
   }
 }
 
@@ -545,6 +1582,22 @@ function handlePointerUp(event) {
   if (!state.interaction || state.interaction.pointerId !== event.pointerId) return;
   if (state.interaction.type === 'move-bubble' || state.interaction.type === 'resize' || state.interaction.type === 'tail') {
     pushHistory();
+  } else if (state.interaction.type === 'panel-move') {
+    if (Math.abs(state.interaction.appliedX || 0) > 0 || Math.abs(state.interaction.appliedY || 0) > 0) {
+      pushHistory();
+    }
+  } else if (state.interaction.type === 'panel-resize' || state.interaction.type === 'panel-image-pan') {
+    pushHistory();
+  } else if (state.interaction.type === 'panel-split') {
+    const panel = findPanelById(state.panels.root, state.interaction.panelId);
+    if (panel && state.interaction.orientation) {
+      const worldPoint = screenToWorld({ x: event.clientX, y: event.clientY });
+      if (splitPanel(panel, state.interaction.orientation, worldPoint)) {
+        pushHistory();
+      }
+    }
+  } else if (state.interaction.type === 'panel-gesture') {
+    // no action determined; keep selection only
   }
   if (state.interaction.type === 'pan') {
     updateSceneTransform();
@@ -627,12 +1680,15 @@ function setTailTip(bubble, x, y) {
 
 function autoFitBubbleToText(bubble, options = {}) {
   const { lockCenter = true, allowShrink = true } = options;
-  const padding = Math.max(20, bubble.padding);
+  const basePadding = Math.max(36, Math.min(bubble.width, bubble.height) * 0.18);
+  const padding = Math.max(basePadding, bubble.padding || 0);
+  bubble.padding = padding;
   const measure = elements.measureBox;
   measure.style.fontFamily = bubble.fontFamily;
   measure.style.fontSize = `${bubble.fontSize}px`;
   measure.style.fontWeight = bubble.bold ? '700' : '400';
-  measure.textContent = bubble.text || '';
+  const displayText = getBubbleDisplayText(bubble);
+  measure.textContent = displayText || '';
   const textWidth = Math.max(measure.scrollWidth, measure.offsetWidth, 1);
   const textHeight = Math.max(measure.scrollHeight, measure.offsetHeight, 1);
   const targetWidth = textWidth + padding * 2;
@@ -664,7 +1720,7 @@ function updateControlsFromSelection() {
   elements.fontFamily.value = bubble.fontFamily;
   elements.fontSize.value = bubble.fontSize;
   elements.toggleBold.dataset.active = bubble.bold ? 'true' : 'false';
-  elements.textContent.value = bubble.text;
+  elements.textContent.value = getBubbleRawText(bubble);
   elements.positionIndicator.textContent = `位置：(${bubble.x.toFixed(0)}, ${bubble.y.toFixed(0)}) 尺寸：${bubble.width.toFixed(0)}×${bubble.height.toFixed(0)}`;
 }
 
@@ -675,7 +1731,7 @@ function openInlineEditor(bubble) {
   const width = bottomRight.x - topLeft.x;
   const height = bottomRight.y - topLeft.y;
   const editor = elements.inlineEditor;
-  editor.value = bubble.text;
+  editor.value = getBubbleDisplayText(bubble);
   editor.style.left = `${topLeft.x}px`;
   editor.style.top = `${topLeft.y}px`;
   editor.style.width = `${width}px`;
@@ -693,11 +1749,12 @@ elements.inlineEditor.addEventListener('blur', () => {
   if (!state.inlineEditingBubbleId) return;
   const bubble = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
   if (!bubble) return;
-  bubble.text = elements.inlineEditor.value;
-  autoFitBubbleToText(bubble);
+  const editorValue = elements.inlineEditor.value;
+  const rawValue = state.autoWrap.enabled ? editorValue.replace(/\n/g, '') : editorValue;
+  updateBubbleText(bubble, rawValue);
   elements.inlineEditor.classList.add('hidden');
   state.inlineEditingBubbleId = null;
-  elements.textContent.value = bubble.text;
+  elements.textContent.value = rawValue;
   pushHistory();
   render();
 });
@@ -706,9 +1763,28 @@ elements.inlineEditor.addEventListener('input', () => {
   if (!state.inlineEditingBubbleId) return;
   const bubble = state.bubbles.find((item) => item.id === state.inlineEditingBubbleId);
   if (!bubble) return;
-  bubble.text = elements.inlineEditor.value;
-  autoFitBubbleToText(bubble);
-  elements.textContent.value = bubble.text;
+  const editor = elements.inlineEditor;
+  const editorValue = editor.value;
+  let rawStart = editor.selectionStart;
+  let rawEnd = editor.selectionEnd;
+  if (state.autoWrap.enabled) {
+    rawStart = rawIndexFromDisplay(editorValue, editor.selectionStart);
+    rawEnd = rawIndexFromDisplay(editorValue, editor.selectionEnd);
+  }
+  const rawValue = state.autoWrap.enabled ? editorValue.replace(/\n/g, '') : editorValue;
+  updateBubbleText(bubble, rawValue);
+  const displayText = getBubbleDisplayText(bubble);
+  if (displayText !== editorValue) {
+    editor.value = displayText;
+    if (state.autoWrap.enabled) {
+      const newStart = displayIndexFromRaw(displayText, rawStart);
+      const newEnd = displayIndexFromRaw(displayText, rawEnd);
+      editor.setSelectionRange(newStart, newEnd);
+    } else {
+      editor.setSelectionRange(rawStart, rawEnd);
+    }
+  }
+  elements.textContent.value = rawValue;
   render();
 });
 
@@ -730,9 +1806,91 @@ function getTextRect(bubble) {
   };
 }
 
+function renderPanels() {
+  ensurePageFrame();
+  const panels = getPanelState();
+  const layer = elements.panelLayer;
+  const frame = elements.pageFrame;
+  if (!panels.pageFrame || !panels.root) {
+    frame.style.display = 'none';
+    frame.style.boxShadow = 'none';
+    layer.innerHTML = '';
+    panelElements.clear();
+    return;
+  }
+  layoutPanelTree();
+  frame.style.display = 'block';
+  frame.style.left = `${panels.pageFrame.x}px`;
+  frame.style.top = `${panels.pageFrame.y}px`;
+  frame.style.width = `${panels.pageFrame.width}px`;
+  frame.style.height = `${panels.pageFrame.height}px`;
+  frame.style.boxShadow = panels.outerColor ? `0 0 0 9999px ${panels.outerColor}` : 'none';
+
+  const leaves = collectPanelLeaves(panels.root);
+  const activeIds = new Set();
+  leaves.forEach((panel) => {
+    activeIds.add(panel.id);
+    let panelEl = panelElements.get(panel.id);
+    if (!panelEl) {
+      panelEl = document.createElement('div');
+      panelEl.className = 'panel';
+      panelEl.dataset.panelId = panel.id;
+      const border = document.createElement('div');
+      border.className = 'panel-border';
+      panelEl.appendChild(border);
+      const wrapper = document.createElement('div');
+      wrapper.className = 'panel-image-wrapper';
+      panelEl.appendChild(wrapper);
+      layer.appendChild(panelEl);
+      panelElements.set(panel.id, panelEl);
+    }
+    panelEl.style.left = `${panel.rect.x}px`;
+    panelEl.style.top = `${panel.rect.y}px`;
+    panelEl.style.width = `${panel.rect.width}px`;
+    panelEl.style.height = `${panel.rect.height}px`;
+    const border = panelEl.querySelector('.panel-border');
+    if (border) {
+      border.style.borderWidth = `${panels.strokeWidth}px`;
+      border.style.borderColor = '#11141b';
+    }
+    const wrapper = panelEl.querySelector('.panel-image-wrapper');
+    if (wrapper) {
+      const existingImg = wrapper.querySelector('img');
+      if (panel.image && panel.image.src) {
+        let img = existingImg;
+        if (!img) {
+          img = document.createElement('img');
+          wrapper.appendChild(img);
+        }
+        img.src = panel.image.src;
+        img.style.width = `${panel.image.width}px`;
+        img.style.height = `${panel.image.height}px`;
+        const scale = panel.image.scale ?? 1;
+        const rotation = panel.image.rotation ?? 0;
+        const offsetX = panel.image.offsetX ?? 0;
+        const offsetY = panel.image.offsetY ?? 0;
+        img.style.transform = `translate(-50%, -50%) translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${scale})`;
+      } else if (existingImg) {
+        existingImg.remove();
+      }
+    }
+  });
+  Array.from(panelElements.keys()).forEach((id) => {
+    if (!activeIds.has(id)) {
+      const element = panelElements.get(id);
+      if (element) {
+        element.remove();
+      }
+      panelElements.delete(id);
+    }
+  });
+}
+
 function render() {
+  renderPanels();
   renderBubbles();
   updateSelectionOverlay();
+  updatePanelOverlay();
 }
 
 function renderBubbles() {
@@ -775,7 +1933,7 @@ function renderBubbles() {
     div.style.fontFamily = bubble.fontFamily;
     div.style.fontSize = `${bubble.fontSize}px`;
     div.style.fontWeight = bubble.bold ? '700' : '400';
-    div.textContent = bubble.text;
+    div.textContent = getBubbleDisplayText(bubble);
     textNode.appendChild(div);
     group.appendChild(textNode);
 
@@ -784,6 +1942,11 @@ function renderBubbles() {
 }
 
 function createBodyShape(bubble) {
+  if (bubble.type === 'speech') {
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', createSpeechBubblePath(bubble));
+    return path;
+  }
   if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('d', createRectanglePath(bubble));
@@ -805,6 +1968,9 @@ function createBodyShape(bubble) {
 
 function createTailShape(bubble) {
   if (!bubble.tail) return null;
+  if (bubble.type === 'speech') {
+    return null;
+  }
   if (bubble.type.startsWith('thought')) {
     const group = document.createElementNS(svgNS, 'g');
     const tip = getTailTip(bubble);
@@ -876,29 +2042,145 @@ function createRoundedRectPath(x, y, width, height, radius) {
   ].join(' ');
 }
 
-function buildSpeechTailPath(bubble) {
-  const tip = getTailTip(bubble);
-  const base = getTailBase(bubble);
-  const center = { x: bubble.x + bubble.width / 2, y: bubble.y + bubble.height / 2 };
-  const sideVector = { x: tip.x - center.x, y: tip.y - center.y };
-  const dominantHorizontal = Math.abs(sideVector.x) > Math.abs(sideVector.y);
-  let baseCenter = { x: base.x, y: base.y };
-  const baseWidth = Math.max(36, Math.min(bubble.width, bubble.height) * 0.25);
-  const baseHeight = Math.max(36, Math.min(bubble.width, bubble.height) * 0.25);
-  let p1;
-  let p2;
-  if (dominantHorizontal) {
-    baseCenter.y = clamp(tip.y, bubble.y + baseHeight * 0.3, bubble.y + bubble.height - baseHeight * 0.3);
-    const offset = baseHeight / 2;
-    p1 = { x: baseCenter.x, y: baseCenter.y - offset };
-    p2 = { x: baseCenter.x, y: baseCenter.y + offset };
+function createSpeechBubblePath(bubble) {
+  const tailInfo = computeTailGeometry(bubble);
+  const side = tailInfo?.side || null;
+  const { x, y, width, height } = bubble;
+  const radius = Math.min(width, height) * 0.45;
+  const path = [];
+  const topStartX = x + radius;
+  const topEndX = x + width - radius;
+  path.push(`M ${topStartX} ${y}`);
+  if (tailInfo && side === 'top') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstX = clamp(first.x, topStartX, topEndX);
+    const secondX = clamp(second.x, topStartX, topEndX);
+    if (firstX > topStartX) {
+      path.push(`H ${firstX}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${secondX} ${y}`);
+    if (secondX < topEndX) {
+      path.push(`H ${topEndX}`);
+    }
   } else {
-    baseCenter.x = clamp(tip.x, bubble.x + baseWidth * 0.3, bubble.x + bubble.width - baseWidth * 0.3);
-    const offset = baseWidth / 2;
-    p1 = { x: baseCenter.x - offset, y: baseCenter.y };
-    p2 = { x: baseCenter.x + offset, y: baseCenter.y };
+    path.push(`H ${topEndX}`);
   }
-  return `M ${p1.x} ${p1.y} Q ${tip.x} ${tip.y} ${p2.x} ${p2.y}`;
+  path.push(`Q ${x + width} ${y} ${x + width} ${y + radius}`);
+  const rightStartY = y + radius;
+  const rightEndY = y + height - radius;
+  if (tailInfo && side === 'right') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstY = clamp(first.y, rightStartY, rightEndY);
+    const secondY = clamp(second.y, rightStartY, rightEndY);
+    if (firstY > rightStartY) {
+      path.push(`V ${firstY}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${x + width} ${secondY}`);
+    if (secondY < rightEndY) {
+      path.push(`V ${rightEndY}`);
+    }
+  } else {
+    path.push(`V ${rightEndY}`);
+  }
+  path.push(`Q ${x + width} ${y + height} ${x + width - radius} ${y + height}`);
+  const bottomStartX = x + width - radius;
+  const bottomEndX = x + radius;
+  if (tailInfo && side === 'bottom') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstX = clamp(first.x, bottomEndX, bottomStartX);
+    const secondX = clamp(second.x, bottomEndX, bottomStartX);
+    if (firstX < bottomStartX) {
+      path.push(`H ${firstX}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${secondX} ${y + height}`);
+    if (secondX > bottomEndX) {
+      path.push(`H ${bottomEndX}`);
+    }
+  } else {
+    path.push(`H ${bottomEndX}`);
+  }
+  path.push(`Q ${x} ${y + height} ${x} ${y + height - radius}`);
+  const leftStartY = y + height - radius;
+  const leftEndY = y + radius;
+  if (tailInfo && side === 'left') {
+    const [first, second] = orderTailBasePoints(side, tailInfo.p1, tailInfo.p2);
+    const firstY = clamp(first.y, leftEndY, leftStartY);
+    const secondY = clamp(second.y, leftEndY, leftStartY);
+    if (firstY < leftStartY) {
+      path.push(`V ${firstY}`);
+    }
+    path.push(`Q ${tailInfo.tip.x} ${tailInfo.tip.y} ${x} ${secondY}`);
+    if (secondY > leftEndY) {
+      path.push(`V ${leftEndY}`);
+    }
+  } else {
+    path.push(`V ${leftEndY}`);
+  }
+  path.push(`Q ${x} ${y} ${topStartX} ${y}`);
+  path.push('Z');
+  return path.join(' ');
+}
+
+function buildSpeechTailPath(bubble) {
+  const geometry = computeTailGeometry(bubble);
+  if (!geometry) return '';
+  const [start, end] = orderTailBasePoints(geometry.side, geometry.p1, geometry.p2);
+  return `M ${start.x} ${start.y} Q ${geometry.tip.x} ${geometry.tip.y} ${end.x} ${end.y}`;
+}
+
+function computeTailGeometry(bubble) {
+  if (!bubble.tail) return null;
+  const tip = getTailTip(bubble);
+  if (!tip) return null;
+  const baseCenter = getTailBase(bubble);
+  const dx = tip.x - baseCenter.x;
+  const dy = tip.y - baseCenter.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const halfAngle = (SPEECH_TAIL_ANGLE_DEGREES * Math.PI) / 180 / 2;
+  const halfWidth = Math.tan(halfAngle) * length;
+  const px = -dy / length;
+  const py = dx / length;
+  let p1 = { x: baseCenter.x + px * halfWidth, y: baseCenter.y + py * halfWidth };
+  let p2 = { x: baseCenter.x - px * halfWidth, y: baseCenter.y - py * halfWidth };
+  const side = resolveTailSide(bubble, baseCenter);
+  const { x, y, width, height } = bubble;
+  const radius = Math.min(width, height) * 0.45;
+  if (side === 'top' || side === 'bottom') {
+    const minX = x + radius;
+    const maxX = x + width - radius;
+    const baseY = side === 'top' ? y : y + height;
+    p1 = { x: clamp(p1.x, minX, maxX), y: baseY };
+    p2 = { x: clamp(p2.x, minX, maxX), y: baseY };
+  } else {
+    const minY = y + radius;
+    const maxY = y + height - radius;
+    const baseX = side === 'left' ? x : x + width;
+    p1 = { x: baseX, y: clamp(p1.y, minY, maxY) };
+    p2 = { x: baseX, y: clamp(p2.y, minY, maxY) };
+  }
+  return { tip, baseCenter, p1, p2, side };
+}
+
+function resolveTailSide(bubble, baseCenter) {
+  const { x, y, width, height } = bubble;
+  const epsilon = Math.min(width, height) * 0.05;
+  if (Math.abs(baseCenter.y - y) <= epsilon) return 'top';
+  if (Math.abs(baseCenter.y - (y + height)) <= epsilon) return 'bottom';
+  if (Math.abs(baseCenter.x - x) <= epsilon) return 'left';
+  return 'right';
+}
+
+function orderTailBasePoints(side, p1, p2) {
+  if (side === 'top') {
+    return p1.x <= p2.x ? [p1, p2] : [p2, p1];
+  }
+  if (side === 'right') {
+    return p1.y <= p2.y ? [p1, p2] : [p2, p1];
+  }
+  if (side === 'bottom') {
+    return p1.x >= p2.x ? [p1, p2] : [p2, p1];
+  }
+  return p1.y >= p2.y ? [p1, p2] : [p2, p1];
 }
 
 function getOverlayRect(bubble) {
@@ -1015,6 +2297,8 @@ function pushHistory() {
     bubbles: state.bubbles,
     selectedBubbleId: state.selectedBubbleId,
     viewport: state.viewport,
+    autoWrap: state.autoWrap,
+    panels: serializePanels(),
   });
   state.history = state.history.slice(0, state.historyIndex + 1);
   state.history.push(snapshot);
@@ -1028,9 +2312,14 @@ function undo() {
   state.bubbles = snapshot.bubbles.map((bubble) => ({ ...bubble }));
   state.selectedBubbleId = snapshot.selectedBubbleId;
   state.viewport = { ...snapshot.viewport };
+  if (snapshot.autoWrap) {
+    state.autoWrap = { ...snapshot.autoWrap };
+  }
+  restorePanels(snapshot.panels);
   updateSceneTransform();
   render();
   updateControlsFromSelection();
+  updateAutoWrapControls();
 }
 
 function clamp(value, min, max) {
@@ -1052,11 +2341,23 @@ async function exportRaster(format) {
   canvas.width = state.canvas.width;
   canvas.height = state.canvas.height;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
+  const panels = getPanelState();
+  const backgroundColor = panels.pageFrame ? panels.outerColor : '#ffffff';
+  ctx.fillStyle = backgroundColor || '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   if (state.image.src) {
-    await drawImageToCanvas(ctx, state.image.src, canvas.width, canvas.height);
+    if (panels.pageFrame) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(panels.pageFrame.x, panels.pageFrame.y, panels.pageFrame.width, panels.pageFrame.height);
+      ctx.clip();
+      await drawImageToCanvas(ctx, state.image.src, canvas.width, canvas.height);
+      ctx.restore();
+    } else {
+      await drawImageToCanvas(ctx, state.image.src, canvas.width, canvas.height);
+    }
   }
+  await drawPanelsToContext(ctx, { includeOverlay: true, includeLines: true, includeImages: true });
   drawBubblesToContext(ctx, { includeText: true });
   const mime = format === 'png' ? 'image/png' : 'image/jpeg';
   const quality = format === 'jpg' ? 0.95 : 1;
@@ -1085,7 +2386,9 @@ function drawBubblesToContext(ctx, options = {}) {
     ctx.strokeStyle = '#11141b';
     ctx.fillStyle = '#ffffff';
     if (includeBodies) {
-      if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
+      if (bubble.type === 'speech') {
+        drawPath(ctx, createSpeechBubblePath(bubble));
+      } else if (bubble.type === 'rectangle' || bubble.type === 'speech-left' || bubble.type === 'speech-right') {
         drawPath(ctx, createRectanglePath(bubble));
       } else if (bubble.type.startsWith('thought')) {
         ctx.beginPath();
@@ -1104,7 +2407,7 @@ function drawBubblesToContext(ctx, options = {}) {
       } else {
         drawPath(ctx, createRoundedRectPath(bubble.x, bubble.y, bubble.width, bubble.height, Math.min(bubble.width, bubble.height) * 0.45));
       }
-      if (bubble.tail) {
+      if (bubble.tail && bubble.type !== 'speech') {
         if (bubble.type.startsWith('thought')) {
           drawThoughtTail(ctx, bubble);
         } else {
@@ -1118,7 +2421,8 @@ function drawBubblesToContext(ctx, options = {}) {
       ctx.font = `${bubble.bold ? 'bold ' : ''}${bubble.fontSize}px ${bubble.fontFamily}`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      const lines = bubble.text.split('\n');
+      const displayText = getBubbleDisplayText(bubble);
+      const lines = displayText ? displayText.split('\n') : [''];
       const lineHeight = bubble.fontSize * 1.2;
       const startY = textRect.y + textRect.height / 2 - ((lines.length - 1) * lineHeight) / 2;
       lines.forEach((line, index) => {
@@ -1127,6 +2431,67 @@ function drawBubblesToContext(ctx, options = {}) {
     }
     ctx.restore();
   });
+}
+
+const panelImageCache = new Map();
+
+async function getPanelImageElement(src) {
+  if (panelImageCache.has(src)) {
+    return panelImageCache.get(src);
+  }
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  panelImageCache.set(src, img);
+  return img;
+}
+
+async function drawPanelsToContext(ctx, options = {}) {
+  const { includeOverlay = true, includeLines = true, includeImages = true } = options;
+  const panels = getPanelState();
+  if (!panels.pageFrame || !panels.root) return;
+  const leaves = collectPanelLeaves(panels.root);
+  const pageFrame = panels.pageFrame;
+  if (includeOverlay) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(117, 83, 47, 0.3)';
+    ctx.beginPath();
+    ctx.rect(pageFrame.x, pageFrame.y, pageFrame.width, pageFrame.height);
+    leaves.forEach((panel) => {
+      ctx.rect(panel.rect.x, panel.rect.y, panel.rect.width, panel.rect.height);
+    });
+    ctx.fill('evenodd');
+    ctx.restore();
+  }
+  if (includeImages) {
+    for (const panel of leaves) {
+      if (panel.image && panel.image.src) {
+        const img = await getPanelImageElement(panel.image.src);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(panel.rect.x, panel.rect.y, panel.rect.width, panel.rect.height);
+        ctx.clip();
+        const centerX = panel.rect.x + panel.rect.width / 2;
+        const centerY = panel.rect.y + panel.rect.height / 2;
+        ctx.translate(centerX, centerY);
+        ctx.translate(panel.image.offsetX || 0, panel.image.offsetY || 0);
+        ctx.rotate(((panel.image.rotation || 0) * Math.PI) / 180);
+        const scale = panel.image.scale || 1;
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, -panel.image.width / 2, -panel.image.height / 2, panel.image.width, panel.image.height);
+        ctx.restore();
+      }
+    }
+  }
+  if (includeLines) {
+    ctx.save();
+    ctx.lineWidth = panels.strokeWidth;
+    ctx.strokeStyle = '#11141b';
+    leaves.forEach((panel) => {
+      ctx.strokeRect(panel.rect.x, panel.rect.y, panel.rect.width, panel.rect.height);
+    });
+    ctx.restore();
+  }
 }
 
 function drawPath(ctx, pathData) {
@@ -1245,6 +2610,10 @@ async function buildLayers() {
   const layers = [];
   const imageLayer = await buildImageLayer();
   if (imageLayer) layers.push(imageLayer);
+  const panelImageLayer = await buildPanelImageLayer();
+  if (panelImageLayer) layers.push(panelImageLayer);
+  const panelFrameLayer = await buildPanelFrameLayer();
+  if (panelFrameLayer) layers.push(panelFrameLayer);
   const bubbleLayer = await buildBubbleLayer();
   if (bubbleLayer) layers.push(bubbleLayer);
   const textLayers = await Promise.all(state.bubbles.map((bubble) => buildTextLayer(bubble)));
@@ -1276,8 +2645,47 @@ async function buildBubbleLayer() {
   return buildRasterLayer('泡泡', canvas);
 }
 
+async function buildPanelImageLayer() {
+  const panels = getPanelState();
+  if (!panels.pageFrame || !panels.root) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = state.canvas.width;
+  canvas.height = state.canvas.height;
+  const ctx = canvas.getContext('2d');
+  await drawPanelsToContext(ctx, { includeOverlay: false, includeLines: false, includeImages: true });
+  return buildRasterLayer('格框图片', canvas);
+}
+
+async function buildPanelFrameLayer() {
+  const panels = getPanelState();
+  if (!panels.pageFrame || !panels.root) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = state.canvas.width;
+  canvas.height = state.canvas.height;
+  const ctx = canvas.getContext('2d');
+  const pageFrame = panels.pageFrame;
+  ctx.fillStyle = panels.outerColor || '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pageFrame.x, pageFrame.y, pageFrame.width, pageFrame.height);
+  ctx.clip();
+  ctx.clearRect(pageFrame.x, pageFrame.y, pageFrame.width, pageFrame.height);
+  ctx.restore();
+  const leaves = collectPanelLeaves(panels.root);
+  ctx.save();
+  ctx.lineWidth = panels.strokeWidth;
+  ctx.strokeStyle = '#11141b';
+  leaves.forEach((panel) => {
+    ctx.strokeRect(panel.rect.x, panel.rect.y, panel.rect.width, panel.rect.height);
+  });
+  ctx.restore();
+  return buildRasterLayer('漫画框', canvas);
+}
+
 async function buildTextLayer(bubble) {
-  if (!bubble.text) return null;
+  const displayText = getBubbleDisplayText(bubble);
+  if (!displayText) return null;
   const textOnly = document.createElement('canvas');
   textOnly.width = state.canvas.width;
   textOnly.height = state.canvas.height;
@@ -1288,16 +2696,263 @@ async function buildTextLayer(bubble) {
   textCtx.font = `${bubble.bold ? 'bold ' : ''}${bubble.fontSize}px ${bubble.fontFamily}`;
   textCtx.textBaseline = 'middle';
   textCtx.textAlign = 'center';
-  const lines = bubble.text.split('\n');
+  const lines = displayText.split('\n');
   const lineHeight = bubble.fontSize * 1.2;
   const startY = textRect.y + textRect.height / 2 - ((lines.length - 1) * lineHeight) / 2;
   lines.forEach((line, index) => {
     textCtx.fillText(line, textRect.x + textRect.width / 2, startY + index * lineHeight);
   });
-  return buildRasterLayer(`文字-${bubble.id}`, textOnly);
+  const textRectPixels = {
+    left: clamp(Math.floor(textRect.x), 0, state.canvas.width),
+    top: clamp(Math.floor(textRect.y), 0, state.canvas.height),
+    right: clamp(Math.ceil(textRect.x + textRect.width), 0, state.canvas.width),
+    bottom: clamp(Math.ceil(textRect.y + textRect.height), 0, state.canvas.height),
+  };
+  const additionalInfo = buildTextLayerInfo(`文字-${bubble.id}`, bubble, textRectPixels);
+  return buildRasterLayer(`文字-${bubble.id}`, textOnly, {
+    additionalInfo,
+  });
 }
 
-function buildRasterLayer(name, canvas) {
+function buildTextLayerInfo(name, bubble, bounds) {
+  const blocks = [buildUnicodeLayerNameInfo(name)];
+  const typeTool = buildTypeToolInfo(bubble, bounds);
+  if (typeTool) {
+    blocks.push(typeTool);
+  }
+  return blocks;
+}
+
+function buildUnicodeLayerNameInfo(name) {
+  const unicode = encodeUnicodeStringWithLength(name || '');
+  return buildAdditionalLayerInfoBlock('luni', unicode);
+}
+
+function buildTypeToolInfo(bubble, bounds) {
+  const text = getBubbleDisplayText(bubble);
+  if (!text) return null;
+  const normalized = text.replace(/\r?\n/g, '\r');
+  const engineData = buildEngineDataString(bubble, normalized);
+  const encoder = new TextEncoder();
+  const engineBytes = encoder.encode(engineData);
+  const descriptor = encodeDescriptor('', 'TxLr', [
+    { key: 'Txt ', type: 'TEXT', value: normalized },
+    { key: 'EngineData', type: 'tdta', value: engineBytes },
+    { key: 'bounds', type: 'Objc', value: buildBoundsDescriptor(bounds) },
+    { key: 'boundingBox', type: 'Objc', value: buildBoundsDescriptor(bounds) },
+    { key: 'textGridding', type: 'enum', value: { typeId: 'textGridding', enumId: 'None' } },
+    { key: 'Ornt', type: 'enum', value: { typeId: 'Ornt', enumId: 'Hrzn' } },
+  ]);
+  const warp = encodeDescriptor('', 'warp', [
+    { key: 'warpStyle', type: 'enum', value: { typeId: 'warpStyle', enumId: 'warpNone' } },
+    { key: 'warpValue', type: 'doub', value: 0 },
+    { key: 'warpPerspective', type: 'doub', value: 0 },
+    { key: 'warpPerspectiveOther', type: 'doub', value: 0 },
+    { key: 'warpRotate', type: 'enum', value: { typeId: 'warpRotate', enumId: 'warpRotateHorizontal' } },
+  ]);
+  const bufferLength = 2 + 2 + 6 * 8 + descriptor.length + warp.length + 16;
+  const buffer = new Uint8Array(bufferLength);
+  const view = new DataView(buffer.buffer);
+  let offset = 0;
+  view.setUint16(offset, 1);
+  offset += 2;
+  view.setUint16(offset, 1);
+  offset += 2;
+  const transform = [1, 0, 0, 1, bounds.left, bounds.top];
+  transform.forEach((value) => {
+    view.setFloat64(offset, value);
+    offset += 8;
+  });
+  buffer.set(descriptor, offset);
+  offset += descriptor.length;
+  buffer.set(warp, offset);
+  offset += warp.length;
+  view.setInt32(offset, bounds.left);
+  offset += 4;
+  view.setInt32(offset, bounds.top);
+  offset += 4;
+  view.setInt32(offset, bounds.right);
+  offset += 4;
+  view.setInt32(offset, bounds.bottom);
+  offset += 4;
+  return buildAdditionalLayerInfoBlock('TySh', buffer);
+}
+
+function buildBoundsDescriptor(bounds) {
+  return {
+    name: '',
+    classId: 'Rctn',
+    items: [
+      { key: 'Top ', type: 'UntF', value: { unit: '#Pxl', value: bounds.top } },
+      { key: 'Left', type: 'UntF', value: { unit: '#Pxl', value: bounds.left } },
+      { key: 'Btom', type: 'UntF', value: { unit: '#Pxl', value: bounds.bottom } },
+      { key: 'Rght', type: 'UntF', value: { unit: '#Pxl', value: bounds.right } },
+    ],
+  };
+}
+
+function buildEngineDataString(bubble, content) {
+  const fontSize = bubble.fontSize || 24;
+  const lineHeight = fontSize * 1.2;
+  const fontFamily = bubble.fontFamily || 'sans-serif';
+  const postScriptName = sanitizePostScriptName(fontFamily);
+  const escapedText = escapePsString(content);
+  const escapedName = escapePsString(fontFamily);
+  const escapedPostScript = escapePsString(postScriptName);
+  const runLength = Math.max(1, content.length);
+  return [
+    '<<',
+    '/EngineDict <<',
+    '  /EditorVersion 160',
+    '  /ParagraphRunArray [ << /ParagraphSheetData << /Justification 0 >> /RunLength ' + runLength + ' >> ]',
+    '  /StyleRunArray [ << /StyleSheetData << /FontSize ' + fontSize.toFixed(2) +
+      ' /Leading ' + lineHeight.toFixed(2) +
+      ' /AutoLeading true /FauxBold ' + (bubble.bold ? 'true' : 'false') +
+      ' /FauxItalic false /FillColor [ 0 0 0 1 ] /StrokeColor [ 0 0 0 1 ]' +
+      ' /FontPostScriptName (' + escapedPostScript + ') /FontName (' + escapedName + ') >> /RunLength ' + runLength + ' >> ]',
+    '  /DocumentResources << /FontSet [ << /Name (' + escapedName + ') /FontPostScriptName (' + escapedPostScript + ') /FontScript 0 /FontType 0 >> ] >>',
+    '  /Text (' + escapedText + ')',
+    '>>',
+    '>>',
+  ].join('\n');
+}
+
+function sanitizePostScriptName(name) {
+  if (!name) return 'Regular';
+  return name.replace(/\s+/g, '');
+}
+
+function escapePsString(value) {
+  return (value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\r');
+}
+
+function buildAdditionalLayerInfoBlock(key, data) {
+  const paddedLength = data.length + (data.length % 2);
+  const buffer = new Uint8Array(12 + paddedLength);
+  buffer.set([...'8BIM'].map((c) => c.charCodeAt(0)), 0);
+  buffer.set(key.split('').map((c) => c.charCodeAt(0)), 4);
+  const view = new DataView(buffer.buffer);
+  view.setUint32(8, data.length);
+  buffer.set(data, 12);
+  if (data.length % 2 === 1) {
+    buffer[12 + data.length] = 0;
+  }
+  return buffer;
+}
+
+function encodeDescriptor(name, classId, items, includeSignature = true) {
+  const parts = [];
+  parts.push(encodeUnicodeStringWithLength(name || ''));
+  parts.push(encodeClassId(classId || 'null'));
+  const count = new Uint8Array(4);
+  new DataView(count.buffer).setUint32(0, items.length);
+  parts.push(count);
+  items.forEach((item) => {
+    parts.push(encodeClassId(item.key));
+    parts.push(stringToBytes(item.type, 4));
+    parts.push(encodeDescriptorValue(item.type, item.value));
+  });
+  const body = parts.length ? concatUint8Arrays(parts) : new Uint8Array(0);
+  if (!includeSignature) {
+    return body;
+  }
+  const buffer = new Uint8Array(4 + body.length);
+  buffer.set([...'8BIM'].map((c) => c.charCodeAt(0)), 0);
+  buffer.set(body, 4);
+  return buffer;
+}
+
+function encodeDescriptorValue(type, value) {
+  switch (type) {
+    case 'TEXT':
+      return encodeUnicodeStringWithLength(value || '');
+    case 'doub': {
+      const buffer = new Uint8Array(8);
+      new DataView(buffer.buffer).setFloat64(0, Number(value) || 0);
+      return buffer;
+    }
+    case 'long': {
+      const buffer = new Uint8Array(4);
+      new DataView(buffer.buffer).setInt32(0, Number(value) || 0);
+      return buffer;
+    }
+    case 'bool':
+      return new Uint8Array([value ? 1 : 0]);
+    case 'UntF': {
+      const unit = stringToBytes((value && value.unit) || '#Pxl', 4);
+      const buffer = new Uint8Array(4 + 8);
+      buffer.set(unit, 0);
+      new DataView(buffer.buffer).setFloat64(4, Number(value && value.value) || 0);
+      return buffer;
+    }
+    case 'tdta': {
+      const data = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+      const padded = data.length % 2 === 0 ? data : (() => {
+        const extended = new Uint8Array(data.length + 1);
+        extended.set(data, 0);
+        return extended;
+      })();
+      const buffer = new Uint8Array(4 + padded.length);
+      new DataView(buffer.buffer).setUint32(0, data.length);
+      buffer.set(padded, 4);
+      return buffer;
+    }
+    case 'Objc':
+      return encodeDescriptor(value && value.name ? value.name : '', value && value.classId ? value.classId : 'null', value && value.items ? value.items : [], false);
+    case 'enum': {
+      const typeId = value && value.typeId ? value.typeId : 'null';
+      const enumId = value && value.enumId ? value.enumId : 'null';
+      return concatUint8Arrays([encodeClassId(typeId), encodeClassId(enumId)]);
+    }
+    default:
+      return new Uint8Array(0);
+  }
+}
+
+function encodeClassId(id) {
+  const encoder = new TextEncoder();
+  const text = `${id || ''}`;
+  if (text.length === 4 && /^[\x00-\x7F]{4}$/.test(text)) {
+    const buffer = new Uint8Array(8);
+    const view = new DataView(buffer.buffer);
+    view.setUint32(0, 0);
+    buffer.set(encoder.encode(text), 4);
+    return buffer;
+  }
+  const encoded = encoder.encode(text);
+  const buffer = new Uint8Array(4 + encoded.length);
+  new DataView(buffer.buffer).setUint32(0, encoded.length);
+  buffer.set(encoded, 4);
+  return buffer;
+}
+
+function stringToBytes(text, length) {
+  const encoder = new TextEncoder();
+  const encoded = encoder.encode(text || '');
+  const buffer = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    buffer[i] = encoded[i] || 0;
+  }
+  return buffer;
+}
+
+function encodeUnicodeStringWithLength(value) {
+  const text = value || '';
+  const buffer = new Uint8Array(4 + text.length * 2);
+  const view = new DataView(buffer.buffer);
+  view.setUint32(0, text.length);
+  for (let i = 0; i < text.length; i += 1) {
+    view.setUint16(4 + i * 2, text.charCodeAt(i));
+  }
+  return buffer;
+}
+
+function buildRasterLayer(name, canvas, options = {}) {
   const { width, height } = canvas;
   const channels = canvasToChannels(canvas);
   const channelEntries = [
@@ -1307,7 +2962,9 @@ function buildRasterLayer(name, canvas) {
     { id: -1, data: channels[3] },
   ];
   const nameData = pascalString(name);
-  const extraLength = 4 + 0 + 4 + 0 + nameData.length;
+  const additionalInfo = Array.isArray(options.additionalInfo) ? options.additionalInfo : [];
+  const additionalBytes = additionalInfo.length ? concatUint8Arrays(additionalInfo) : new Uint8Array(0);
+  const extraLength = 4 + 0 + 4 + 0 + nameData.length + additionalBytes.length;
   const recordLength = 16 + 2 + channelEntries.length * 6 + 12 + 4 + extraLength;
   const record = new Uint8Array(recordLength);
   const view = new DataView(record.buffer);
@@ -1344,8 +3001,10 @@ function buildRasterLayer(name, canvas) {
   offset += 4;
   record.set(nameData, offset);
   offset += nameData.length;
-  const padding = (4 - (offset % 4)) % 4;
-  offset += padding;
+  if (additionalBytes.length) {
+    record.set(additionalBytes, offset);
+    offset += additionalBytes.length;
+  }
 
   const channelData = channelEntries.map((entry) => {
     const data = new Uint8Array(2 + entry.data.length);
@@ -1394,6 +3053,7 @@ async function createCompositeImage() {
   if (state.image.src) {
     await drawImageToCanvas(ctx, state.image.src, canvas.width, canvas.height);
   }
+  await drawPanelsToContext(ctx, { includeOverlay: true, includeLines: true, includeImages: true });
   drawBubblesToContext(ctx, { includeText: true, includeBodies: true });
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   return encodeCompositeImage(imageData);
