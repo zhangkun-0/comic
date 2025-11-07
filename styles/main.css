@@ -155,6 +155,14 @@ button[data-active='true'] {
   color: #1e1f29;
 }
 
+input[type='number']:disabled,
+input[type='range']:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .visually-hidden-input {
   position: fixed;
   top: 50%;

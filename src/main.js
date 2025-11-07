@@ -700,6 +700,30 @@ function updatePanelRotationControl() {
   elements.panelRotationValue.textContent = `${Math.round(rotation)}`;
 }
 
+function updatePanelControlsAvailability() {
+  const enabled = Boolean(state.image && state.image.src);
+  const controls = [
+    elements.frameMarginX,
+    elements.frameMarginY,
+    elements.panelStroke,
+    elements.panelGapX,
+    elements.panelGapY,
+    elements.panelBackground,
+  ];
+  controls.forEach((control) => {
+    if (control) {
+      control.disabled = !enabled;
+    }
+  });
+  if (!enabled && elements.panelRotation) {
+    elements.panelRotation.disabled = true;
+    elements.panelRotation.value = '0';
+    if (elements.panelRotationValue) {
+      elements.panelRotationValue.textContent = '0';
+    }
+  }
+}
+
 function handlePanelRotationInput() {
   const panel = getSelectedPanel();
   if (!panel || !panel.image) return;
@@ -853,6 +877,7 @@ function restorePanels(snapshot) {
     renderPanels();
     updatePanelOverlay();
     updatePanelRotationControl();
+    updatePanelControlsAvailability();
     return;
   }
   panels.nextId = snapshot.nextId;
@@ -875,6 +900,7 @@ function restorePanels(snapshot) {
   elements.panelGapX.value = `${panels.gapX}`;
   elements.panelGapY.value = `${panels.gapY}`;
   elements.panelBackground.value = panels.outerColor;
+  updatePanelControlsAvailability();
 }
 
 const overlay = {
@@ -898,6 +924,7 @@ function init() {
   setupPanelOverlay();
   attachEvents();
   updateAutoWrapControls();
+  updatePanelControlsAvailability();
   updatePanelRotationControl();
   updateSceneSize(state.canvas.width, state.canvas.height);
   fitViewport();
@@ -1073,6 +1100,7 @@ function loadImage(dataUrl) {
     elements.placeholder.style.display = 'none';
     ensurePageFrame();
     layoutPanelTree();
+    updatePanelControlsAvailability();
     pushHistory();
     render();
   };
